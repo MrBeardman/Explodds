@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create:*)",
+      "Bash(printf 'y\\\\n')",
+      "Bash(npx create-vite@latest . --template react-ts)",
+      "Read(//c/Users/honza/Documents/MyProjects/**)",
+      "Bash(npx create-vite@latest ExploddsTmp --template react-ts)",
+      "Bash(cp -r C:/Users/honza/Documents/MyProjects/ExploddsTmp/. C:/Users/honza/Documents/MyProjects/Explodds/)",
+      "Bash(rm -rf C:/Users/honza/Documents/MyProjects/ExploddsTmp)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}
