@@ -6,42 +6,43 @@ import type { GameState, Tile, RelicId, ConsumableId, ShopItem } from './types';
 export function generateGrid(
   bombCount: number,
   relics: RelicId[],
-  consumables: ConsumableId[]
+  consumables: ConsumableId[],
+  excludedIndices: number[] = []  // these indices keep their current state (e.g. a revealed bomb)
 ): Tile[] {
   const tiles: Tile[] = Array.from({ length: GRID_SIZE }, (_, i) => ({
     id: i,
     isBomb: false,
-    state: 'hidden',
+    state: 'hidden' as const,
     isSafeRevealed: false,
     isDefused: false,
   }));
 
-  // Cartographer: one corner tile forced safe (index 0 = top-left)
+  // Cartographer: one corner tile forced safe
   const cartographerActive = relics.includes('cartographer');
-  const corners = [0, 4, 20, 24];
-  const cartographerCorner = cartographerActive ? corners[Math.floor(Math.random() * corners.length)] : -1;
+  const corners = [0, 4, 20, 24].filter(c => !excludedIndices.includes(c));
+  const cartographerCorner = cartographerActive && corners.length > 0
+    ? corners[Math.floor(Math.random() * corners.length)]
+    : -1;
 
-  // Place bombs
-  const bombableIndices = tiles.map((_, i) => i).filter(i => i !== cartographerCorner);
+  // Place bombs (skip excluded + cartographer corner)
+  const bombableIndices = tiles
+    .map((_, i) => i)
+    .filter(i => i !== cartographerCorner && !excludedIndices.includes(i));
   const shuffled = bombableIndices.sort(() => Math.random() - 0.5);
-  for (let i = 0; i < bombCount; i++) {
+  for (let i = 0; i < Math.min(bombCount, shuffled.length); i++) {
     tiles[shuffled[i]].isBomb = true;
   }
 
-  // Reveal cartographer corner
+  // Cartographer: hint the safe corner (clickable for points)
   if (cartographerCorner >= 0) {
-    tiles[cartographerCorner].state = 'revealed';
-    tiles[cartographerCorner].isSafeRevealed = true;
+    tiles[cartographerCorner].state = 'hinted';
   }
 
-  // Apply Scatter Reveal consumable: reveal 3 random safe hidden tiles
+  // Scatter Reveal: hint 3 random safe tiles (clickable for points)
   if (consumables.includes('scatter_reveal')) {
-    const safeTiles = tiles.filter(t => !t.isBomb && t.state === 'hidden');
+    const safeTiles = tiles.filter(t => !t.isBomb && t.state === 'hidden' && !excludedIndices.includes(t.id));
     const pick = safeTiles.sort(() => Math.random() - 0.5).slice(0, 3);
-    pick.forEach(t => {
-      tiles[t.id].state = 'revealed';
-      tiles[t.id].isSafeRevealed = true;
-    });
+    pick.forEach(t => { tiles[t.id].state = 'hinted'; });
   }
 
   return tiles;
@@ -54,15 +55,9 @@ export function calcMultiplierGain(
   safeTilesLeft: number,
   relics: RelicId[]
 ): number {
-  // Base gain: 0.1 + bonus for more bombs on board
   const bombBonus = bombCount * 0.01;
   let gain = 0.1 + bombBonus;
-
-  // Adrenaline Core: +25% faster when under 10 safe tiles left
-  if (relics.includes('adrenaline_core') && safeTilesLeft < 10) {
-    gain *= 1.25;
-  }
-
+  if (relics.includes('adrenaline_core') && safeTilesLeft < 10) gain *= 1.25;
   return parseFloat(gain.toFixed(3));
 }
 
@@ -78,17 +73,11 @@ export function calcCashout(
 ): number {
   const overage = Math.max(0, score - targetScore);
   const overPercent = targetScore > 0 ? overage / targetScore : 0;
-  const bonus = Math.floor(overPercent * 10); // $1 per 10% over target
+  const bonus = Math.floor(overPercent * 10);
 
   let payout = basePayout + bonus;
-
-  // Greed Chip: +$2 flat
   if (relics.includes('greed_chip')) payout += 2;
-
-  // Double Down: clear 80%+ = double payout
-  if (relics.includes('double_down') && tilesCleared / totalSafeTiles >= 0.8) {
-    payout *= 2;
-  }
+  if (relics.includes('double_down') && tilesCleared / totalSafeTiles >= 0.8) payout *= 2;
 
   return payout;
 }
@@ -96,12 +85,10 @@ export function calcCashout(
 // ─── Shop Generation ──────────────────────────────────────────────────────────
 
 export function generateShopItems(ownedRelics: RelicId[]): ShopItem[] {
-  // Filter out already owned relics
   const pool = ALL_SHOP_ITEMS.filter(
     item => !(item.type === 'relic' && ownedRelics.includes(item.id as RelicId))
   );
-  const shuffled = pool.sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, 4);
+  return pool.sort(() => Math.random() - 0.5).slice(0, 4);
 }
 
 // ─── Initial State ────────────────────────────────────────────────────────────
@@ -115,6 +102,7 @@ export function createInitialState(): GameState {
     score: 0,
     multiplier: 1.0,
     grid: [],
+    gridKey: 0,
     relics: [],
     consumables: [],
     shopItems: [],
@@ -135,22 +123,19 @@ export function startLevel(state: GameState): GameState {
   const levelConfig = LEVELS[state.level - 1];
   const grid = generateGrid(levelConfig.bombs, state.relics, state.consumables);
 
-  // Apply Multiplier Lens (from previous purchase — count is already set)
   return {
     ...state,
     phase: 'playing',
     score: 0,
     multiplier: 1.0,
     grid,
+    gridKey: state.gridKey + 1,
     canCashout: false,
     bombHitThisRound: false,
     pendingConsumable: null,
     defusedTiles: [],
     scannerAxis: null,
-    // consumables are one-use; clear scatter_reveal and multiplier_lens after applying
-    consumables: state.consumables.filter(
-      c => c !== 'scatter_reveal'
-    ),
+    consumables: state.consumables.filter(c => c !== 'scatter_reveal'),
   };
 }
 
@@ -158,10 +143,12 @@ export function startLevel(state: GameState): GameState {
 
 export function handleTileClick(state: GameState, tileIndex: number): GameState {
   const tile = state.grid[tileIndex];
+  // 'revealed' and 'defused' can't be clicked; 'hinted' and 'hidden' can
   if (tile.state === 'revealed' || tile.state === 'defused') return state;
   if (state.phase !== 'playing') return state;
 
-  // Handle pending consumable placement
+  // ── Consumable placement ──────────────────────────────────────────────────
+
   if (state.pendingConsumable === 'defuser') {
     const newGrid = [...state.grid];
     newGrid[tileIndex] = { ...tile, isDefused: true };
@@ -175,7 +162,6 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   }
 
   if (state.pendingConsumable === 'scanner') {
-    // Reveal entire row or column of the clicked tile
     const row = Math.floor(tileIndex / GRID_COLS);
     const col = tileIndex % GRID_COLS;
     const axis = state.scannerAxis ?? 'row';
@@ -183,10 +169,11 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       const tRow = Math.floor(i / GRID_COLS);
       const tCol = i % GRID_COLS;
       const match = axis === 'row' ? tRow === row : tCol === col;
-      if (match && t.state === 'hidden') {
-        return { ...t, state: 'revealed' as const, isSafeRevealed: true };
-      }
-      return t;
+      if (!match) return t;
+      if (t.state !== 'hidden' && t.state !== 'hinted') return t;
+      // Bombs → revealed (info, unclickable). Safe → hinted (still clickable for points)
+      if (t.isBomb) return { ...t, state: 'revealed' as const, isSafeRevealed: true };
+      return { ...t, state: 'hinted' as const };
     });
     return {
       ...state,
@@ -197,17 +184,18 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     };
   }
 
-  // Normal tile click
+  // ── Bomb click ────────────────────────────────────────────────────────────
+
   const newGrid = [...state.grid];
 
   if (tile.isBomb) {
-    // Check defuser
+    // Defuser check
     if (tile.isDefused || state.defusedTiles.includes(tileIndex)) {
       newGrid[tileIndex] = { ...tile, state: 'defused' };
       return { ...state, grid: newGrid };
     }
 
-    // Dead Man's Hand: get 40% of score
+    // Dead Man's Hand: 40% of score before dying
     let bonusMoney = 0;
     if (state.relics.includes('dead_mans_hand') && state.score > 0) {
       bonusMoney = Math.floor(state.score * 0.4);
@@ -216,13 +204,12 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     // Safety Net: first bomb doesn't cost a life
     const safetyNetActive = state.relics.includes('safety_net') && !state.safetyNetUsed;
     const newLives = safetyNetActive ? state.lives : state.lives - 1;
-
-    newGrid[tileIndex] = { ...tile, state: 'revealed' };
-
     const newMoney = state.money + bonusMoney;
     const newTotalEarned = state.totalMoneyEarned + bonusMoney;
 
+    // Game over
     if (newLives <= 0) {
+      newGrid[tileIndex] = { ...tile, state: 'revealed' };
       return {
         ...state,
         grid: newGrid,
@@ -235,15 +222,21 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       };
     }
 
-    // Reset level (no payout)
+    // Level reset: hit bomb stays visible, rest reshuffles with one fewer bomb
+    const levelConfig = LEVELS[state.level - 1];
     const nextGrid = generateGrid(
-      LEVELS[state.level - 1].bombs,
+      levelConfig.bombs - 1,  // one bomb is the revealed one
       state.relics,
-      state.consumables
+      state.consumables,
+      [tileIndex]             // exclude hit tile from new bomb placement
     );
+    // Keep the hit bomb revealed so player can see where it is
+    nextGrid[tileIndex] = { id: tileIndex, isBomb: true, state: 'revealed', isSafeRevealed: false, isDefused: false };
+
     return {
       ...state,
       grid: nextGrid,
+      gridKey: state.gridKey + 1,
       lives: newLives,
       money: newMoney,
       totalMoneyEarned: newTotalEarned,
@@ -253,16 +246,19 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       bombHitThisRound: true,
       safetyNetUsed: safetyNetActive ? true : state.safetyNetUsed,
       multiplierLensCount: 0,
+      pendingConsumable: null,
+      defusedTiles: [],
     };
   }
 
-  // Safe tile
+  // ── Safe tile (hidden or hinted) ──────────────────────────────────────────
+
   const levelConfig = LEVELS[state.level - 1];
-  const safeTilesLeft = state.grid.filter(t => !t.isBomb && t.state === 'hidden').length;
+  // Count remaining safe tiles (hidden + hinted are both uncollected)
+  const safeTilesLeft = state.grid.filter(t => !t.isBomb && (t.state === 'hidden' || t.state === 'hinted')).length;
   const multiplierGain = calcMultiplierGain(levelConfig.bombs, safeTilesLeft, state.relics);
   const newMultiplier = parseFloat((state.multiplier + multiplierGain).toFixed(3));
 
-  // Points: base * multiplier, double if multiplier lens active
   let points = Math.round(BASE_TILE_POINTS * state.multiplier);
   let newLensCount = state.multiplierLensCount;
   if (newLensCount > 0) {
@@ -271,7 +267,8 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   }
 
   const newScore = state.score + points;
-  newGrid[tileIndex] = { ...tile, state: 'revealed' };
+  // Mark as fully revealed (clear hinted status so it counts toward cleared tiles)
+  newGrid[tileIndex] = { ...tile, state: 'revealed', isSafeRevealed: false };
 
   const canCashout = newScore >= levelConfig.target;
 
@@ -303,19 +300,10 @@ export function handleCashout(state: GameState): GameState {
 
   const newMoney = state.money + payout;
   const newTotalEarned = state.totalMoneyEarned + payout;
-
-  // Multiplier Lens: if purchased in shop, count is set when entering level
-  // Apply consumable multiplier_lens effect
   const lensCount = state.consumables.includes('multiplier_lens') ? 5 : state.multiplierLensCount;
 
   if (state.level >= 6) {
-    // Win!
-    return {
-      ...state,
-      money: newMoney,
-      totalMoneyEarned: newTotalEarned,
-      phase: 'gameover',
-    };
+    return { ...state, money: newMoney, totalMoneyEarned: newTotalEarned, phase: 'gameover' };
   }
 
   const shopItems = generateShopItems(state.relics);
@@ -348,7 +336,6 @@ export function handleBuyItem(state: GameState, itemId: string): GameState {
     };
   }
 
-  // Consumable
   return {
     ...state,
     money: newMoney,

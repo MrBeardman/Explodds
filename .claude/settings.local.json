@@ -10,7 +10,13 @@
       "Bash(rm -rf C:/Users/honza/Documents/MyProjects/ExploddsTmp)",
       "Bash(npm install:*)",
       "Bash(npx tsc:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(gh repo:*)",
+      "Bash(where gh:*)",
+      "Bash(where git:*)",
+      "Bash(python3 -c \"from PIL import Image; img = Image.open\\(''C:/Users/honza/Documents/MyProjects/Explodds/src/assets/cartoon-set-game-icons-isolated-background/2304.w056.n005.209B.p15.209.jpg''\\); print\\(img.size\\)\")",
+      "Bash(node -e \"const {createCanvas,loadImage}=require\\(''canvas''\\);loadImage\\(''C:/Users/honza/Documents/MyProjects/Explodds/src/assets/cartoon-set-game-icons-isolated-background/2304.w056.n005.209B.p15.209.jpg''\\).then\\(img=>console.log\\(img.width,img.height\\)\\)\")",
+      "Bash(node:*)"
     ]
   }
 }

@@ -1,5 +1,8 @@
+import { useState, useCallback } from 'react';
 import type { GameState, ConsumableId } from '../types';
 import { LEVELS } from '../constants';
+import diamondSrc from '../assets/diamond.png';
+import bombSrc from '../assets/bomb.png';
 
 interface Props {
   state: GameState;
@@ -10,7 +13,29 @@ interface Props {
 
 export function Grid({ state, onTileClick, onUseConsumable, onScannerAxis }: Props) {
   const levelConfig = LEVELS[state.level - 1];
-  const safeTilesLeft = state.grid.filter(t => !t.isBomb && t.state === 'hidden').length;
+  const safeTilesLeft = state.grid.filter(t => !t.isBomb && (t.state === 'hidden' || t.state === 'hinted')).length;
+
+  // Track which tiles are mid-reveal animation
+  const [animating, setAnimating] = useState<Set<number>>(new Set());
+
+  const handleTileClick = useCallback((index: number) => {
+    const tile = state.grid[index];
+    if (tile.state === 'revealed' || tile.state === 'defused') return;
+    if (state.pendingConsumable === 'defuser' || state.pendingConsumable === 'scanner') {
+      onTileClick(index);
+      return;
+    }
+    // Trigger reveal animation
+    setAnimating(prev => new Set(prev).add(index));
+    onTileClick(index);
+    setTimeout(() => {
+      setAnimating(prev => {
+        const next = new Set(prev);
+        next.delete(index);
+        return next;
+      });
+    }, 500);
+  }, [state.grid, state.pendingConsumable, onTileClick]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -26,46 +51,65 @@ export function Grid({ state, onTileClick, onUseConsumable, onScannerAxis }: Pro
       )}
 
       {/* Grid info */}
-      <div className="flex justify-between text-sm text-gray-400">
-        <span>💣 {levelConfig.bombs} bombs on board</span>
-        <span>{safeTilesLeft} safe tiles hidden</span>
+      <div className="flex justify-between text-sm text-gray-400 px-1">
+        <span>💣 {levelConfig.bombs} bombs</span>
+        <span>{safeTilesLeft} safe tiles left</span>
       </div>
 
-      {/* 5×5 Grid */}
-      <div className="grid grid-cols-5 gap-2">
+      {/* 5×5 Grid — key on gridKey so entrance animation replays on reset */}
+      <div key={state.gridKey} className="grid grid-cols-5 gap-2">
         {state.grid.map((tile, i) => {
           const isRevealed = tile.state === 'revealed';
           const isDefused = tile.state === 'defused';
-          const isSafeHint = tile.isSafeRevealed && isRevealed;
-          const isPending = state.pendingConsumable !== null;
-          const hasDefuserPlaced = tile.isDefused && !isRevealed;
+          const isHinted = tile.state === 'hinted';
+          const isAnimating = animating.has(i);
+          const isPendingMode = state.pendingConsumable !== null;
 
-          let bg = 'bg-gray-800 hover:bg-gray-700 border-gray-700 cursor-pointer';
-          if (isRevealed && tile.isBomb) bg = 'bg-red-900/80 border-red-700';
-          else if (isRevealed && isSafeHint) bg = 'bg-blue-900/60 border-blue-700';
-          else if (isRevealed) bg = 'bg-gray-900 border-gray-700';
-          else if (isDefused) bg = 'bg-yellow-900/60 border-yellow-600';
-          else if (hasDefuserPlaced) bg = 'bg-yellow-900/40 border-yellow-700 cursor-pointer';
-          else if (isPending) bg = 'bg-gray-800 hover:bg-blue-900/40 border-gray-600 cursor-crosshair';
+          // Determine visual state
+          let bg = '';
+          let cursor = 'cursor-pointer';
 
-          let icon = '';
-          if (isRevealed && tile.isBomb) icon = '💣';
-          else if (isDefused) icon = '🔧';
-          else if (hasDefuserPlaced) icon = '🔧';
-          else if (isSafeHint) icon = '✓';
+          if (isRevealed && tile.isBomb) {
+            bg = 'bg-red-950 border-red-700';
+            cursor = 'cursor-default';
+          } else if (isRevealed) {
+            bg = 'bg-slate-900 border-slate-700';
+            cursor = 'cursor-default';
+          } else if (isDefused) {
+            bg = 'bg-yellow-950 border-yellow-700';
+            cursor = 'cursor-default';
+          } else if (isHinted) {
+            bg = 'bg-blue-950/70 border-blue-600';
+          } else {
+            // hidden
+            bg = isPendingMode
+              ? 'bg-gray-800 border-gray-600 hover:border-blue-500'
+              : 'bg-gray-800 border-gray-700';
+          }
+
+          const entranceDelay = `${(i % 5) * 30 + Math.floor(i / 5) * 40}ms`;
 
           return (
             <button
               key={tile.id}
-              onClick={() => onTileClick(i)}
-              disabled={isRevealed && !isPending}
-              className={`aspect-square rounded-lg border-2 text-2xl font-bold transition-all duration-150 flex items-center justify-center
-                ${bg}
-                ${isRevealed || isDefused ? 'cursor-default' : ''}
-                disabled:cursor-default
-              `}
+              onClick={() => handleTileClick(i)}
+              disabled={(isRevealed || isDefused) && !isPendingMode}
+              style={{ animationDelay: entranceDelay }}
+              className={[
+                'aspect-square rounded-xl border-2 flex items-center justify-center',
+                'transition-[border-color] duration-150',
+                'tile-entrance',
+                bg,
+                cursor,
+                // Hover effect: levitate (only on clickable tiles)
+                (!isRevealed && !isDefused)
+                  ? 'hover:scale-110 hover:shadow-lg hover:shadow-black/50 hover:-translate-y-0.5 transition-transform duration-150'
+                  : '',
+                // Reveal animation
+                isAnimating ? 'tile-reveal' : '',
+              ].filter(Boolean).join(' ')}
             >
-              {icon}
+              <TileIcon tile={tile} isAnimating={isAnimating} />
             </button>
           );
         })}
@@ -73,6 +117,58 @@ export function Grid({ state, onTileClick, onUseConsumable, onScannerAxis }: Pro
     </div>
   );
 }
+
+// ─── Tile Icon ────────────────────────────────────────────────────────────────
+
+function TileIcon({ tile, isAnimating }: { tile: import('../types').Tile; isAnimating: boolean }) {
+  const isRevealed = tile.state === 'revealed';
+  const isDefused = tile.state === 'defused';
+  const isHinted = tile.state === 'hinted';
+
+  if (isRevealed && tile.isBomb) {
+    return (
+      <img
+        src={bombSrc}
+        alt="bomb"
+        className={`w-3/4 h-3/4 object-contain drop-shadow-lg ${isAnimating ? 'icon-pop' : ''}`}
+      />
+    );
+  }
+
+  if (isRevealed && !tile.isBomb) {
+    return (
+      <img
+        src={diamondSrc}
+        alt="safe"
+        className={`w-3/4 h-3/4 object-contain drop-shadow-lg ${isAnimating ? 'icon-pop' : ''}`}
+      />
+    );
+  }
+
+  if (isDefused) {
+    return <span className="text-2xl">🔧</span>;
+  }
+
+  if (isHinted) {
+    // Semi-transparent diamond indicating "safe to click"
+    return (
+      <img
+        src={diamondSrc}
+        alt="safe hint"
+        className="w-1/2 h-1/2 object-contain opacity-50"
+      />
+    );
+  }
+
+  // Defuser placed but tile not yet clicked
+  if (tile.isDefused) {
+    return <span className="text-xl opacity-60">🔧</span>;
+  }
+
+  return null;
+}
+
+// ─── Consumable Toolbar ───────────────────────────────────────────────────────
 
 interface ToolbarProps {
   consumables: ConsumableId[];
@@ -111,28 +207,22 @@ function ConsumableToolbar({ consumables, pendingConsumable, scannerAxis, onUse,
         ))}
       </div>
 
-      {/* Scanner axis selector */}
       {pendingConsumable === 'scanner' && (
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <span className="text-xs text-gray-400">Scan:</span>
           <button
             onClick={() => onScannerAxis('row')}
             className={`px-2 py-1 rounded text-xs border cursor-pointer ${scannerAxis === 'row' ? 'bg-blue-700 border-blue-500 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-blue-500'}`}
-          >
-            Row →
-          </button>
+          >Row →</button>
           <button
             onClick={() => onScannerAxis('col')}
             className={`px-2 py-1 rounded text-xs border cursor-pointer ${scannerAxis === 'col' ? 'bg-blue-700 border-blue-500 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-blue-500'}`}
-          >
-            Col ↓
-          </button>
-          <span className="text-xs text-blue-400 ml-2">Then click a tile</span>
+          >Col ↓</button>
+          <span className="text-xs text-blue-400">then click a tile</span>
         </div>
       )}
-
       {pendingConsumable === 'defuser' && (
-        <div className="text-xs text-yellow-400">Click a tile to place the Defuser</div>
+        <div className="text-xs text-yellow-400">Click any tile to place the Defuser</div>
       )}
     </div>
   );

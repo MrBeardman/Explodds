@@ -1,11 +1,13 @@
-export type TileState = 'hidden' | 'revealed' | 'defused';
+export type TileState = 'hidden' | 'hinted' | 'revealed' | 'defused';
+// hinted = revealed by a tool (safe tile, still clickable for points)
+// revealed = player-clicked safe tile, or revealed bomb, or defused bomb clicked
 
 export interface Tile {
   id: number;
   isBomb: boolean;
   state: TileState;
-  isSafeRevealed: boolean; // revealed by Scanner/ScatterReveal (no points)
-  isDefused: boolean;       // Defuser placed here
+  isSafeRevealed: boolean; // true for scanner-revealed bombs (info only, unclickable)
+  isDefused: boolean;
 }
 
 export type RelicId =
@@ -42,15 +44,16 @@ export interface GameState {
   score: number;
   multiplier: number;
   grid: Tile[];
+  gridKey: number; // increments on every grid reset — triggers entrance animation
   relics: RelicId[];
   consumables: ConsumableId[];
   shopItems: ShopItem[];
   canCashout: boolean;
   safetyNetUsed: boolean;
-  multiplierLensCount: number; // tiles remaining with 2x points
+  multiplierLensCount: number;
   totalMoneyEarned: number;
-  bombHitThisRound: boolean; // for dead man's hand tracking
-  pendingConsumable: ConsumableId | null; // consumable being placed
-  defusedTiles: number[]; // tile indices with defuser placed
+  bombHitThisRound: boolean;
+  pendingConsumable: ConsumableId | null;
+  defusedTiles: number[];
   scannerAxis: 'row' | 'col' | null;
 }
