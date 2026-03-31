@@ -40,7 +40,6 @@ export type ConsumableId =
   | 'multiplier_lens'
   | 'lucky_charm'
   | 'magnet'
-  | 'extra_life'
   | 'reroll_shop';
 
 export type EventCardId =
@@ -81,22 +80,22 @@ export interface ShopRelicItem {
 // ─── Round summary ────────────────────────────────────────────────────────────
 
 export interface RoundSummaryData {
-  won: boolean;        // cashed out = true, bomb hit = false
+  won: boolean;            // cashed out = true
   round: number;
   isBoss: boolean;
-  score: number;
+  score: number;           // final attempt score at cashout
+  cumulativeScore: number; // total across all attempts this round
   bet: number;
-  payout: number;      // 0 if bomb
-  netGain: number;     // payout - bet (negative if bomb)
+  payout: number;
   cashoutMult: number;
   gemsEarned: number;
   tilesCleared: number;
   totalSafeTiles: number;
   multiplierReached: number;
-  starBonus: number;       // flat $ from stars
-  cherryCombo: boolean;    // 3+ in a row achieved
-  bananaBonus: number;     // extra pts from adjacent bananas
-  luckyCharmBonus: number; // flat $ from lucky charms
+  starBonus: number;
+  cherryCombo: boolean;
+  luckyCharmBonus: number;
+  attempts: number;        // how many busts before cashing out
 }
 
 // ─── Game phases ──────────────────────────────────────────────────────────────
@@ -118,13 +117,11 @@ export type GamePhase =
 export interface GameState {
   // Meta
   phase: GamePhase;
-  seed: number; // displayed on end screen so players can share runs
+  seed: number;
 
   // Run-persistent resources
   cash: number;
   gems: number;
-  lives: number;
-  maxLives: number;
   relics: RelicId[];
   consumables: ConsumableId[]; // owned, not yet placed/used
 
@@ -138,34 +135,37 @@ export interface GameState {
   runTokens: number;
 
   // Run-scoped flags
-  safetyNetUsed: boolean; // Safety Net relic (one per run)
+  safetyNetUsed: boolean; // Safety Net relic — protects one bust per run
 
-  // Current round
+  // Round-level: persists across attempts within a round
+  cumulativeRoundScore: number;  // sum of scores from all busted attempts
+  roundAttempts: number;         // bust count this round
+  bustMessage: string | null;    // shown on bet phase after bust
+
+  // Current attempt
   bet: number;
-  score: number;
+  score: number;            // score for current attempt only
   multiplier: number;
   streakMeter: number;         // 0–100
   streakGuaranteed: boolean;   // next click is guaranteed safe + 3×
-  bellsThisStreak: number;     // for Bell Choir relic (every 3 bells → instant fill)
-  consecutiveClears: number;   // for Chain Reaction relic
+  bellsThisStreak: number;     // for Bell Choir relic
+  consecutiveClears: number;   // for Chain Reaction relic + streak display
   clearsSinceMagnet: number;   // for Magnet consumable
   canCashout: boolean;
-  multiplierLensCount: number; // tiles remaining with 2× points from Multiplier Lens
+  multiplierLensCount: number;
 
-  // Round symbol tracking
-  starsThisRound: number;
-  cherriesRevealed: number[];  // tile indices revealed
-  bananasRevealed: number[];
-  coinsThisRound: number;
-  gemsThisRound: number;
-  tilesCleared: number;
-  luckyCharmBonus: number;     // flat $ accumulator from Lucky Charm consumable
+  // Attempt symbol tracking
+  starsThisAttempt: number;
+  cherriesRevealed: number[];  // tile indices (for cherry combo)
+  gemsThisRound: number;       // accumulated across all attempts this round
+  tilesCleared: number;        // current attempt tiles
+  luckyCharmBonus: number;     // flat $ accumulator from Lucky Charm
   steadyHandsUsed: boolean;    // Steady Hands event card (once per round)
 
   // Event cards
-  eventCardOptions: EventCardId[];   // 3 drawn for this round
+  eventCardOptions: EventCardId[];
   activeEventCard: EventCardId | null;
-  lastEventCard: EventCardId | null; // prevents immediate repeat
+  lastEventCard: EventCardId | null;
 
   // Grid
   grid: Tile[];
@@ -173,10 +173,10 @@ export interface GameState {
   isBossRound: boolean;
 
   // Consumable placement phase
-  placementQueue: ConsumableId[];  // consumables awaiting placement
-  placingIndex: number;            // index into placementQueue (-1 = done)
+  placementQueue: ConsumableId[];
+  placingIndex: number;
 
-  // Scanner (used during playing phase)
+  // Scanner
   pendingScannerAxis: 'row' | 'col' | null;
 
   // Shop
@@ -185,9 +185,9 @@ export interface GameState {
   shopRerollUsed: boolean;
   relicRerollUsed: boolean;
 
-  // Boss reward (shown after cashing out a boss round)
+  // Boss reward
   bossRewardOptions: RelicId[];
 
-  // Round summary (populated at round end)
+  // Round summary
   roundSummary: RoundSummaryData | null;
 }

@@ -23,7 +23,7 @@ export function Shop({ state, onBuyConsumable, onBuyRelic, onRerollConsumables, 
         <div className="flex justify-center gap-6 font-mono text-sm mt-2">
           <span style={{ color: 'var(--gold)' }}>💵 ${state.cash}</span>
           <span style={{ color: '#60c0ff' }}>💎 {state.gems} gems</span>
-          <span style={{ color: 'var(--text-muted)' }}>{'❤️'.repeat(state.lives)}</span>
+          <span style={{ color: 'var(--text-muted)' }}>💎 {state.gems} gems</span>
         </div>
       </div>
 

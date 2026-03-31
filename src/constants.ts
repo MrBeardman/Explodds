@@ -80,7 +80,7 @@ export const EVENT_CARDS: EventCardDef[] = [
   { id: 'safe_zone',     emoji: '🛡', name: 'Safe Zone',     description: 'One random quadrant is guaranteed bomb-free' },
   { id: 'greed_mode',    emoji: '💸', name: 'Greed Mode',    description: 'Cashout multiplier ×1.5, but bet minimum is $30' },
   { id: 'coin_rush',     emoji: '🪙', name: 'Coin Rush',     description: 'Coin weight tripled, gems from coins +2 this round' },
-  { id: 'steady_hands',  emoji: '✋', name: 'Steady Hands',  description: 'First bomb hit this round does not cost a life' },
+  { id: 'steady_hands',  emoji: '✋', name: 'Steady Hands',  description: 'First bust this round doesn\'t deduct your bet' },
   { id: 'lucky_scout',   emoji: '🔭', name: 'Lucky Scout',   description: 'Reveals 2 random safe tiles before round starts' },
   { id: 'high_roller',   emoji: '🎲', name: 'High Roller',   description: 'Round target +50%, but cashout multiplier ×2.5 if hit' },
 ];
@@ -98,7 +98,6 @@ export const ALL_CONSUMABLES: ShopConsumableItem[] = [
   { id: 'multiplier_lens',name: 'Multi Lens',     price: 18, emoji: '🔬', description: 'Place on tile — if safe, next 4 tiles give 2× points', sold: false },
   { id: 'lucky_charm',    name: 'Lucky Charm',    price: 12, emoji: '🍀', description: 'Place on tile — if safe, +$3 flat bonus to cashout', sold: false },
   { id: 'magnet',         name: 'Magnet',         price: 22, emoji: '🧲', description: 'Auto-reveals nearest safe tile after every 5 clears', sold: false },
-  { id: 'extra_life',     name: 'Extra Life',     price: 40, emoji: '❤️', description: '+1 life immediately (max 5 total)', sold: false },
   { id: 'reroll_shop',    name: 'Reroll Shop',    price: 10, emoji: '🔄', description: 'Refresh consumable shop offerings (once per round)', sold: false },
 ];
 
@@ -110,9 +109,9 @@ export const PLACEABLE_CONSUMABLES: ConsumableId[] = ['defuser', 'multiplier_len
 export const ALL_RELICS: ShopRelicItem[] = [
   { id: 'greed_chip',    name: 'Greed Chip',     cost: 8,  emoji: '🪙', description: '+$2 flat on every cashout', sold: false, owned: false },
   { id: 'adrenaline_core',name:'Adrenaline Core',cost: 10, emoji: '⚡', description: 'Multiplier grows 25% faster when <8 safe tiles remain', sold: false, owned: false },
-  { id: 'safety_net',    name: 'Safety Net',      cost: 12, emoji: '🛡', description: 'First bomb each run doesn\'t cost a life', sold: false, owned: false },
+  { id: 'safety_net',    name: 'Safety Net',      cost: 12, emoji: '🛡', description: 'First bust each run doesn\'t deduct your bet', sold: false, owned: false },
   { id: 'double_down',   name: 'Double Down',     cost: 15, emoji: '🎯', description: 'Clear 80%+ safe tiles = double payout', sold: false, owned: false },
-  { id: 'dead_mans_hand',name: "Dead Man's Hand", cost: 10, emoji: '💀', description: 'Bomb hit pays 40% of current round score before dying', sold: false, owned: false },
+  { id: 'dead_mans_hand',name: "Dead Man's Hand", cost: 10, emoji: '💀', description: 'On bust: gain 40% of your current attempt score as a cash bonus', sold: false, owned: false },
   { id: 'cartographer',  name: 'Cartographer',    cost: 8,  emoji: '🗺', description: 'One corner tile is always safe, revealed at round start', sold: false, owned: false },
   { id: 'chain_reaction',name: 'Chain Reaction',  cost: 12, emoji: '⛓', description: 'Every 5 consecutive clears give +0.5 multiplier bonus', sold: false, owned: false },
   { id: 'gem_cutter',    name: 'Gem Cutter',      cost: 10, emoji: '💎', description: 'Coin tiles give +3 gems instead of +1', sold: false, owned: false },
@@ -131,8 +130,6 @@ export const RELIC_MAP = Object.fromEntries(
 export const GRID_SIZE = 25;
 export const GRID_COLS = 5;
 export const STARTING_CASH = 150;
-export const STARTING_LIVES = 3;
-export const MAX_LIVES = 5;
 export const MIN_BET = 10;
 export const BET_STEP = 5;
 export const STREAK_PER_TILE = 10;

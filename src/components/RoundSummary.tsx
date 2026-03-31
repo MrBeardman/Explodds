@@ -13,23 +13,13 @@ export function RoundSummary({ state, onContinue }: Props) {
     <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-6">
       {/* Header */}
       <div className="text-center">
-        {s.won ? (
-          <>
-            <div className="text-5xl mb-2">💸</div>
-            <div className="font-display text-3xl text-glow-gold" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
-              CASHED OUT
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="text-5xl mb-2">💥</div>
-            <div className="font-display text-3xl" style={{ color: 'var(--red)', letterSpacing: '0.1em' }}>
-              BUST
-            </div>
-          </>
-        )}
+        <div className="text-5xl mb-2">💸</div>
+        <div className="font-display text-3xl text-glow-gold" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
+          CASHED OUT
+        </div>
         <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>
           ROUND {s.round} / 6{s.isBoss ? ' · 👑 BOSS' : ''}
+          {s.attempts > 0 ? ` · ${s.attempts} bust${s.attempts > 1 ? 's' : ''} survived` : ''}
         </div>
       </div>
 
@@ -37,41 +27,41 @@ export function RoundSummary({ state, onContinue }: Props) {
 
       {/* Stats */}
       <div className="casino-panel p-4 w-full max-w-sm flex flex-col gap-2">
-        <Row label="Score" value={s.score.toLocaleString()} />
-        <Row label="Bet" value={`$${s.bet}`} />
-        {s.won && <Row label="Cashout Mult" value={`${s.cashoutMult.toFixed(2)}×`} />}
-        {s.won && (
-          <Row
-            label="Payout"
-            value={`$${s.payout}`}
-            highlight={true}
-            color="var(--green)"
-          />
+        <Row label="Bet"             value={`$${s.bet}`} />
+        <Row label="Multiplier"      value={`×${s.cashoutMult.toFixed(2)}`} />
+        <Row label="Base payout"     value={`$${s.payout}`} />
+
+        {(s.starBonus > 0 || s.cherryCombo || s.luckyCharmBonus > 0) && (
+          <div className="gold-line my-1" />
         )}
-        {!s.won && <Row label="Lost Bet" value={`-$${s.bet}`} color="var(--red)" />}
+        {s.starBonus > 0      && <Row label="⭐ Star bonus"   value={`+$${s.starBonus}`}      color="var(--gold)" />}
+        {s.cherryCombo        && <Row label="🍒 Cherry combo!" value="+50% base"              color="var(--gold)" />}
+        {s.luckyCharmBonus > 0&& <Row label="🍀 Lucky charm"  value={`+$${s.luckyCharmBonus}`} color="var(--gold)" />}
 
         <div className="gold-line my-1" />
 
-        {s.starBonus > 0   && <Row label={`⭐ Star Bonus`}      value={`+$${s.starBonus}`} color="var(--gold)" />}
-        {s.cherryCombo     && <Row label={`🍒 Cherry Combo!`}   value="+50% payout" color="var(--gold)" />}
-        {s.bananaBonus > 0 && <Row label={`🍌 Banana Cluster`}  value={`+${s.bananaBonus} pts`} color="var(--gold)" />}
-        {s.luckyCharmBonus > 0 && <Row label={`🍀 Lucky Charm`} value={`+$${s.luckyCharmBonus}`} color="var(--gold)" />}
+        <Row label="TOTAL PAYOUT" value={`$${s.payout}`} highlight color="var(--green)" />
 
         <div className="gold-line my-1" />
 
-        <Row label="Tiles cleared"
-             value={`${s.tilesCleared} / ${s.totalSafeTiles}`} />
-        <Row label="Best multiplier" value={`×${s.multiplierReached.toFixed(1)}`} />
-        <Row label="💎 Gems earned" value={`+${s.gemsEarned}`} color="#60c0ff" />
-        <Row label="💵 Cash now" value={`$${state.cash}`} color="var(--gold)" />
+        <Row label="Score this attempt" value={s.score.toLocaleString()} />
+        {s.attempts > 0 && (
+          <Row label="Cumulative score"  value={s.cumulativeScore.toLocaleString()} />
+        )}
+        <Row label="Tiles cleared"  value={`${s.tilesCleared} / ${s.totalSafeTiles}`} />
+        <Row label="Best mult"      value={`×${s.multiplierReached.toFixed(1)}`} />
+        <Row label="💎 Gems earned" value={`+${s.gemsEarned}`}  color="#60c0ff" />
+        <Row label="💵 Cash now"    value={`$${state.cash}`}    color="var(--gold)" />
       </div>
 
       <button
         onClick={onContinue}
         className="font-display text-xl px-10 py-3 rounded-xl cursor-pointer transition-all duration-200"
         style={{ background: 'var(--gold)', color: '#000', letterSpacing: '0.1em' }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--gold-bright)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'var(--gold)')}
       >
-        {state.lives > 0 ? 'GO TO SHOP →' : 'GAME OVER'}
+        GO TO SHOP →
       </button>
     </div>
   );

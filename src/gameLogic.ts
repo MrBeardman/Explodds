@@ -1,6 +1,6 @@
 import {
-  GRID_SIZE, GRID_COLS, LEVELS, BOSS_BOMBS, SYMBOLS, SYMBOL_MAP,
-  ALL_CONSUMABLES, ALL_RELICS, STARTING_CASH, STARTING_LIVES, MAX_LIVES,
+  GRID_SIZE, GRID_COLS, LEVELS, BOSS_BOMBS, SYMBOLS,
+  ALL_CONSUMABLES, ALL_RELICS, STARTING_CASH,
   STREAK_PER_TILE, STREAK_BELL_BONUS, MAX_CONSUMABLE_SLOTS, MAX_RELIC_SLOTS,
   PLACEABLE_CONSUMABLES, EVENT_CARDS,
 } from './constants';
@@ -9,6 +9,18 @@ import type {
   ShopConsumableItem, ShopRelicItem, RoundSummaryData,
 } from './types';
 import { mulberry32, weightedChoice, rngShuffle, newSeed } from './rng';
+
+// ─── Dynamic bomb count ───────────────────────────────────────────────────────
+
+export function calcDynamicBombs(bet: number, cash: number, baseBombs: number): number {
+  const betRatio = bet / Math.max(cash * 0.5, 1);
+  const bonus = Math.floor(betRatio * 4);
+  return Math.min(Math.max(baseBombs, baseBombs + bonus), 20);
+}
+
+export function calcTileBaseValue(bet: number): number {
+  return 50 + Math.floor(bet / 10);
+}
 
 // ─── RNG helpers ──────────────────────────────────────────────────────────────
 
@@ -38,9 +50,11 @@ export function generateGrid(state: GameState): Tile[] {
   const isBoss = cfg.isBoss;
   const activeEvent = state.activeEventCard;
 
-  // Extra bombs from Danger Pay event
-  const extraBombs = activeEvent === 'danger_pay' ? 2 : 0;
-  const totalBombs = Math.min(cfg.bombs + extraBombs, GRID_SIZE - 1);
+  // Dynamic bomb count based on bet (boss rounds use fixed layouts, skip dynamic)
+  const dynamicBase = isBoss ? cfg.bombs : calcDynamicBombs(state.bet, state.cash, cfg.bombs);
+  // Extra bombs from Danger Pay event (only for non-boss)
+  const extraBombs = (!isBoss && activeEvent === 'danger_pay') ? 2 : 0;
+  const totalBombs = Math.min(dynamicBase + extraBombs, GRID_SIZE - 1);
 
   // Initialize blank tiles
   const tiles: Tile[] = Array.from({ length: GRID_SIZE }, (_, i) => ({
@@ -147,35 +161,35 @@ function calcStreakGain(
 export function calcCashout(state: GameState): {
   cashoutMult: number;
   payout: number;
-  netGain: number;
   starBonus: number;
   cherryCombo: boolean;
-  bananaBonus: number;
+  cherryBonus: number;
   totalPayout: number;
 } {
   const cfg = LEVELS[state.round - 1];
   const targetScore = Math.round(cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1));
+  const cumulativeScore = state.cumulativeRoundScore + state.score;
 
-  // Base multiplier
-  let cashoutMult = Math.max(2.0, (state.score / targetScore) * 2.0);
+  // base_payout = bet × multiplier
+  let basePayout = Math.floor(state.bet * state.multiplier);
 
   // Event card modifiers
-  if (state.activeEventCard === 'greed_mode')  cashoutMult *= 1.5;
-  if (state.activeEventCard === 'high_roller') cashoutMult *= 2.5; // override to 2.5 floor
-  if (state.activeEventCard === 'danger_pay')  cashoutMult *= 1.3;
+  if (state.activeEventCard === 'greed_mode')  basePayout = Math.floor(basePayout * 1.5);
+  if (state.activeEventCard === 'danger_pay')  basePayout = Math.floor(basePayout * 1.3);
+  if (state.activeEventCard === 'high_roller') basePayout = Math.floor(basePayout * 2.5);
 
-  const payout = Math.floor(state.bet * cashoutMult);
+  // Overshoot bonus: 50% extra for each 100% over target
+  const overshoot = Math.max(0, (cumulativeScore - targetScore) / targetScore);
+  const overshootFactor = 1 + overshoot * 0.5;
+  const payout = Math.floor(basePayout * overshootFactor);
 
-  // Star bonus ($1 per star, $2 with Star Shower event)
+  // Star bonus ($1 per star this attempt, $2 with Star Shower)
   const perStar = state.activeEventCard === 'star_shower' ? 2 : 1;
-  const starBonus = state.starsThisRound * perStar;
+  const starBonus = state.starsThisAttempt * perStar;
 
-  // Cherry combo: 3+ cherries in same row or column = +50% to payout
+  // Cherry combo: 3+ in row/col this attempt = +50% of base payout
   const cherryCombo = hasCherryCombo(state.grid, state.cherriesRevealed);
-
-  // Banana adjacency bonus
-  const bananaMult = state.relics.includes('banana_republic') ? 2.5 : 1.5;
-  const bananaBonus = calcBananaBonus(state.grid, state.bananasRevealed, bananaMult);
+  const cherryBonus = cherryCombo ? Math.floor(basePayout * 0.5) : 0;
 
   // Relics
   let relicBonus = 0;
@@ -185,25 +199,14 @@ export function calcCashout(state: GameState): {
     if (state.tilesCleared >= Math.floor(safeTiles * 0.8)) relicBonus += payout;
   }
 
-  // Overage bonus: +$0.50 per 10% above target
-  const overPct = Math.max(0, (state.score - targetScore) / targetScore);
-  const overageBonus = Math.floor(overPct * 10) * 0.5;
-
-  const totalPayout = payout
-    + starBonus
-    + (cherryCombo ? Math.floor(payout * 0.5) : 0)
-    + bananaBonus
-    + relicBonus
-    + state.luckyCharmBonus
-    + overageBonus;
+  const totalPayout = payout + starBonus + cherryBonus + relicBonus + state.luckyCharmBonus;
 
   return {
-    cashoutMult: parseFloat(cashoutMult.toFixed(2)),
+    cashoutMult: parseFloat(state.multiplier.toFixed(2)),
     payout,
-    netGain: Math.floor(totalPayout) - state.bet,
     starBonus,
     cherryCombo,
-    bananaBonus,
+    cherryBonus,
     totalPayout: Math.floor(totalPayout),
   };
 }
@@ -229,27 +232,6 @@ function hasCherryCombo(_grid: Tile[], cherryIndices: number[]): boolean {
   return false;
 }
 
-function calcBananaBonus(_grid: Tile[], bananaIndices: number[], multFactor: number): number {
-  const bananaSet = new Set(bananaIndices);
-  let bonus = 0;
-  const neighbors = (idx: number) => {
-    const r = Math.floor(idx / 5), c = idx % 5;
-    return [
-      r > 0 ? idx - 5 : -1,
-      r < 4 ? idx + 5 : -1,
-      c > 0 ? idx - 1 : -1,
-      c < 4 ? idx + 1 : -1,
-    ].filter(n => n >= 0);
-  };
-  for (const idx of bananaIndices) {
-    const adjBananas = neighbors(idx).filter(n => bananaSet.has(n)).length;
-    if (adjBananas > 0) {
-      const base = SYMBOL_MAP.banana.basePoints;
-      bonus += Math.round(base * (multFactor - 1) * adjBananas);
-    }
-  }
-  return bonus;
-}
 
 // ─── Gem earning ──────────────────────────────────────────────────────────────
 
@@ -306,68 +288,48 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       return { ...state, grid: newGrid };
     }
 
-    // Dead Man's Hand: 40% of score as cash
+    // Safety Net relic (one per run) + Steady Hands event card (one per round)
+    const safetyNetActive = state.relics.includes('safety_net') && !state.safetyNetUsed;
+    const steadyHandsActive = state.activeEventCard === 'steady_hands' && !state.steadyHandsUsed;
+    const betProtected = safetyNetActive || steadyHandsActive;
+
+    // Dead Man's Hand: gain 40% of current attempt score as cash bonus
     let bonusCash = 0;
     if (state.relics.includes('dead_mans_hand') && state.score > 0) {
       bonusCash = Math.floor(state.score * 0.4);
     }
 
-    // Safety Net relic (one per run)
-    const safetyNetActive = state.relics.includes('safety_net') && !state.safetyNetUsed;
-    // Steady Hands event card (one per round)
-    const steadyHandsActive = state.activeEventCard === 'steady_hands' && !state.steadyHandsUsed;
+    const betLoss = betProtected ? 0 : state.bet;
+    const newCash = state.cash - betLoss + bonusCash;
+    const newCumulative = state.cumulativeRoundScore + state.score;
 
-    const lifeProtected = safetyNetActive || steadyHandsActive;
-    const newLives = lifeProtected ? state.lives : state.lives - 1;
-    newGrid[tileIndex].state = 'revealed';
+    const bustMsg = betProtected
+      ? '🛡 PROTECTED! Bet saved'
+      : `💣 BUST! -$${betLoss}${bonusCash > 0 ? ` (+$${bonusCash} bonus)` : ''}`;
 
-    const newCash = state.cash + bonusCash;
-
-    // Build round summary for bomb hit
-    const summary: RoundSummaryData = {
-      won: false,
-      round: state.round,
-      isBoss: state.isBossRound,
-      score: state.score,
-      bet: state.bet,
-      payout: 0,
-      netGain: -state.bet,
-      cashoutMult: 0,
-      gemsEarned: state.gemsThisRound,
-      tilesCleared: state.tilesCleared,
-      totalSafeTiles: state.grid.filter(t => !t.isBomb).length,
-      multiplierReached: state.bestMultiplier,
-      starBonus: 0,
-      cherryCombo: false,
-      bananaBonus: 0,
-      luckyCharmBonus: 0,
-    };
-
-    if (newLives <= 0) {
+    // Cash at or below 0 → game over
+    if (newCash <= 0) {
       return {
         ...state,
-        grid: newGrid,
-        lives: 0,
-        cash: newCash,
+        cash: Math.max(0, newCash),
         totalCashEarned: state.totalCashEarned + bonusCash,
+        cumulativeRoundScore: newCumulative,
         phase: 'gameover',
         runTokens: calcRunTokens(state.roundsCleared, state.bossRoundsCleared),
-        roundSummary: summary,
         safetyNetUsed: safetyNetActive ? true : state.safetyNetUsed,
         steadyHandsUsed: steadyHandsActive ? true : state.steadyHandsUsed,
       };
     }
 
-    // Lives remain — go to round summary (bust)
+    // Cash remains → return to bet phase for another attempt
     return {
       ...state,
-      grid: newGrid,
-      lives: newLives,
       cash: newCash,
       totalCashEarned: state.totalCashEarned + bonusCash,
-      streakMeter: 0,
-      phase: 'round_summary',
-      roundSummary: summary,
+      phase: 'bet',
+      bustMessage: bustMsg,
+      cumulativeRoundScore: newCumulative,
+      roundAttempts: state.roundAttempts + 1,
       safetyNetUsed: safetyNetActive ? true : state.safetyNetUsed,
       steadyHandsUsed: steadyHandsActive ? true : state.steadyHandsUsed,
     };
@@ -385,9 +347,9 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   const newMultiplier = parseFloat((state.multiplier + multGain).toFixed(2));
   const newBestMult = Math.max(state.bestMultiplier, newMultiplier);
 
-  // Points — streak guaranteed tile gives 3×
-  const symDef = SYMBOL_MAP[symbol];
-  let points = Math.round(symDef.basePoints * state.multiplier);
+  // Points — base value scales with bet; streak guaranteed tile gives 3×
+  const tileBase = calcTileBaseValue(state.bet);
+  let points = Math.round(tileBase * state.multiplier);
   if (state.streakGuaranteed) points *= 3;
   let lensCount = state.multiplierLensCount;
   if (tile.placedConsumable === 'multiplier_lens') lensCount = 4; // activate
@@ -404,11 +366,9 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   const newGems = state.gems + gemsGained;
   const newGemsThisRound = state.gemsThisRound + gemsGained;
 
-  // Stars tracking
-  const newStars = symbol === 'star' ? state.starsThisRound + 1 : state.starsThisRound;
+  // Symbol tracking
+  const newStars = symbol === 'star' ? state.starsThisAttempt + 1 : state.starsThisAttempt;
   const newCherries = symbol === 'cherry' ? [...state.cherriesRevealed, tileIndex] : state.cherriesRevealed;
-  const newBananas = symbol === 'banana' ? [...state.bananasRevealed, tileIndex] : state.bananasRevealed;
-  const newCoins = symbol === 'coin' ? state.coinsThisRound + 1 : state.coinsThisRound;
 
   // Streak meter
   let newMeter = state.streakMeter + calcStreakGain(symbol, state.activeEventCard);
@@ -461,7 +421,8 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   const targetScore = Math.round(
     cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1)
   );
-  const canCashout = newScore >= targetScore;
+  // Cashout available when cumulative + current attempt score >= target
+  const canCashout = state.cumulativeRoundScore + newScore >= targetScore;
 
   const newState: GameState = {
     ...state,
@@ -470,10 +431,8 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     multiplier: parseFloat((newMultiplier + chainBonus).toFixed(2)),
     bestMultiplier: newBestMult,
     canCashout,
-    starsThisRound: newStars,
+    starsThisAttempt: newStars,
     cherriesRevealed: newCherries,
-    bananasRevealed: newBananas,
-    coinsThisRound: newCoins,
     gemsThisRound: newGemsThisRound,
     gems: newGems,
     streakMeter: Math.min(newMeter, 100),
@@ -516,7 +475,7 @@ function applyScanner(state: GameState, tileIndex: number): GameState {
 // ─── Cashout handler ──────────────────────────────────────────────────────────
 
 export function handleCashout(state: GameState): GameState {
-  const { totalPayout, cashoutMult, starBonus, cherryCombo, bananaBonus } = calcCashout(state);
+  const { totalPayout, cashoutMult, starBonus, cherryCombo } = calcCashout(state);
   const newCash = state.cash + totalPayout;
   const newTotalEarned = state.totalCashEarned + totalPayout;
 
@@ -538,9 +497,9 @@ export function handleCashout(state: GameState): GameState {
     round: state.round,
     isBoss: state.isBossRound,
     score: state.score,
+    cumulativeScore: state.cumulativeRoundScore + state.score,
     bet: state.bet,
     payout: totalPayout,
-    netGain: totalPayout - state.bet,
     cashoutMult,
     gemsEarned: finalGemsThisRound,
     tilesCleared: state.tilesCleared,
@@ -548,8 +507,8 @@ export function handleCashout(state: GameState): GameState {
     multiplierReached: state.bestMultiplier,
     starBonus,
     cherryCombo,
-    bananaBonus,
     luckyCharmBonus: state.luckyCharmBonus,
+    attempts: state.roundAttempts,
   };
 
   const newRoundsCleared = state.roundsCleared + 1;
@@ -650,11 +609,9 @@ export function startRound(state: GameState): GameState {
     clearsSinceMagnet: 0,
     tilesCleared: 0,
     multiplierLensCount: 0,
-    starsThisRound: 0,
+    starsThisAttempt: 0,
     cherriesRevealed: [],
-    bananasRevealed: [],
-    coinsThisRound: 0,
-    gemsThisRound: 0,
+    gemsThisRound: state.gemsThisRound, // keep accumulated gems
     luckyCharmBonus: 0,
     steadyHandsUsed: false,
     canCashout: false,
@@ -662,6 +619,7 @@ export function startRound(state: GameState): GameState {
     multiplier: 1.0,
     bestMultiplier: 0,
     isBossRound: cfg.isBoss,
+    bustMessage: null,
   });
 
   // Remove scatter_reveal from consumables (it's applied in generateGrid)
@@ -680,14 +638,12 @@ export function startRound(state: GameState): GameState {
     clearsSinceMagnet: 0,
     canCashout: false,
     multiplierLensCount: 0,
-    starsThisRound: 0,
+    starsThisAttempt: 0,
     cherriesRevealed: [],
-    bananasRevealed: [],
-    coinsThisRound: 0,
-    gemsThisRound: 0,
     luckyCharmBonus: 0,
     tilesCleared: 0,
     steadyHandsUsed: false,
+    bustMessage: null,
     grid,
     gridKey: state.gridKey + 1,
     isBossRound: cfg.isBoss,
@@ -696,6 +652,7 @@ export function startRound(state: GameState): GameState {
     pendingScannerAxis: null,
     roundSummary: null,
     consumables: remainingConsumables,
+    // cumulativeRoundScore is preserved across attempts
   };
 }
 
@@ -707,8 +664,6 @@ export function createInitialState(): GameState {
     seed: newSeed(),
     cash: STARTING_CASH,
     gems: 0,
-    lives: STARTING_LIVES,
-    maxLives: MAX_LIVES,
     relics: [],
     consumables: [],
     round: 1,
@@ -719,6 +674,9 @@ export function createInitialState(): GameState {
     totalCashEarned: 0,
     runTokens: 0,
     safetyNetUsed: false,
+    cumulativeRoundScore: 0,
+    roundAttempts: 0,
+    bustMessage: null,
     bet: 20,
     score: 0,
     multiplier: 1.0,
@@ -729,10 +687,8 @@ export function createInitialState(): GameState {
     clearsSinceMagnet: 0,
     canCashout: false,
     multiplierLensCount: 0,
-    starsThisRound: 0,
+    starsThisAttempt: 0,
     cherriesRevealed: [],
-    bananasRevealed: [],
-    coinsThisRound: 0,
     gemsThisRound: 0,
     luckyCharmBonus: 0,
     tilesCleared: 0,

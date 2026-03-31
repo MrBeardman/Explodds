@@ -1,198 +1,107 @@
-import { LEVELS, RELIC_MAP, ALL_CONSUMABLES } from '../constants';
+import { LEVELS, RELIC_MAP } from '../constants';
 import type { GameState } from '../types';
-import { calcCashout } from '../gameLogic';
 
 interface Props {
   state: GameState;
-  onCashout: () => void;
-  onActivateScanner: (axis: 'row' | 'col') => void;
-  onCancelScanner: () => void;
 }
 
-export function HUD({ state, onCashout, onActivateScanner, onCancelScanner }: Props) {
+export function HUD({ state }: Props) {
   const cfg = LEVELS[state.round - 1];
   const targetScore = Math.round(cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1));
-  const progress = Math.min(100, (state.score / targetScore) * 100);
-  const hasCashout = state.canCashout;
-
-  const { totalPayout, cashoutMult } = hasCashout ? calcCashout(state) : { totalPayout: 0, cashoutMult: 0 };
-
-  const hasScanner = state.consumables.includes('scanner');
-  const scannerActive = state.pendingScannerAxis !== null;
+  const cumulativeScore = state.cumulativeRoundScore + state.score;
 
   return (
-    <div className="w-full" style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
-      {/* ── Top bar ─────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 py-2">
-        {/* Left: round + lives */}
-        <div className="flex items-center gap-4">
-          <div>
-            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>ROUND</div>
-            <div className="font-display text-xl" style={{ color: cfg.isBoss ? 'var(--gold)' : 'var(--text-primary)' }}>
-              {state.round}/6{cfg.isBoss ? ' 👑' : ''}
-            </div>
-          </div>
-          <div className="flex gap-1">
-            {Array.from({ length: state.maxLives }).map((_, i) => (
-              <span key={i} className="text-lg" style={{ opacity: i < state.lives ? 1 : 0.2 }}>❤️</span>
-            ))}
-          </div>
-        </div>
+    <>
+      {/* Cash */}
+      <div className="flex flex-col gap-0.5">
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>CASH</div>
+        <div className="font-display text-3xl" style={{ color: 'var(--gold)' }}>${state.cash}</div>
+      </div>
 
-        {/* Center: title */}
-        <div className="font-display text-2xl text-glow-gold hidden sm:block" style={{ color: 'var(--gold)' }}>
-          EXPLODDS
-        </div>
+      <div className="gold-line" />
 
-        {/* Right: cash + gems */}
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>CASH</div>
-            <div className="font-mono font-bold" style={{ color: 'var(--gold)' }}>${state.cash}</div>
+      {/* Round / Target / Score */}
+      <div className="flex flex-col gap-1.5">
+        <StatRow label="ROUND" value={`${state.round} / 6${cfg.isBoss ? ' 👑' : ''}`}
+                 valueColor={cfg.isBoss ? 'var(--gold)' : 'var(--text-primary)'} />
+        <StatRow label="TARGET" value={targetScore.toLocaleString()} />
+        <StatRow
+          label="SCORE"
+          value={cumulativeScore.toLocaleString()}
+          valueColor={state.canCashout ? 'var(--green)' : 'var(--text-primary)'}
+          large
+        />
+        {state.roundAttempts > 0 && (
+          <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
+            {state.roundAttempts} bust{state.roundAttempts > 1 ? 's' : ''} this round
           </div>
-          <div className="text-right">
-            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>GEMS</div>
-            <div className="font-mono font-bold" style={{ color: '#60c0ff' }}>💎 {state.gems}</div>
+        )}
+      </div>
+
+      <div className="gold-line" />
+
+      {/* Multiplier */}
+      <div className="flex flex-col gap-0.5">
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MULTIPLIER</div>
+        <div className="font-display text-3xl" style={{ color: '#f97316' }}>
+          ×{state.multiplier.toFixed(1)}
+        </div>
+        {state.streakGuaranteed && (
+          <div className="font-mono text-xs streak-full" style={{ color: 'var(--gold)' }}>
+            ✦ NEXT TILE SAFE ×3
           </div>
+        )}
+      </div>
+
+      <div className="gold-line" />
+
+      {/* Streak counter */}
+      <div className="flex flex-col gap-0.5">
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>🔥 STREAK</div>
+        <div className="font-display text-2xl" style={{ color: state.consecutiveClears >= 5 ? '#f97316' : 'var(--text-primary)' }}>
+          {state.consecutiveClears}
         </div>
       </div>
 
       <div className="gold-line" />
 
-      {/* ── Main stats row ────────────────────────────────────────────── */}
-      <div className="px-4 py-2 flex items-center gap-4">
-        {/* Score + progress */}
-        <div className="flex-1">
-          <div className="flex justify-between font-mono text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-            <span>{state.score.toLocaleString()}</span>
-            <span>{targetScore.toLocaleString()}</span>
-          </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-raised)' }}>
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{
-                width: `${progress}%`,
-                background: progress >= 100
-                  ? 'linear-gradient(90deg, var(--green), var(--green-bright))'
-                  : 'linear-gradient(90deg, #3b82f6, #60a5fa)',
-              }}
-            />
-          </div>
-        </div>
+      {/* Gems */}
+      <StatRow label="💎 GEMS" value={`${state.gems}`} valueColor="#60c0ff" />
 
-        {/* Multiplier */}
-        <div className="text-center shrink-0">
-          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MULT</div>
-          <div className="font-display text-2xl" style={{ color: '#f97316' }}>
-            ×{state.multiplier.toFixed(1)}
+      {/* Active relics */}
+      {state.relics.length > 0 && (
+        <>
+          <div className="gold-line" />
+          <div className="flex flex-col gap-1">
+            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>RELICS</div>
+            <div className="flex flex-wrap gap-1">
+              {state.relics.map(r => {
+                const def = RELIC_MAP[r];
+                return (
+                  <span key={r} title={def.description}
+                    className="text-lg cursor-default" style={{ lineHeight: 1 }}>
+                    {def.emoji}
+                  </span>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      </div>
-
-      {/* ── Streak meter ─────────────────────────────────────────────── */}
-      <div className="px-4 pb-2">
-        <div className="flex justify-between font-mono text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
-          <span style={{ letterSpacing: '0.15em' }}>STREAK</span>
-          {state.streakGuaranteed && (
-            <span className="streak-full" style={{ color: 'var(--gold)' }}>✦ NEXT TILE SAFE +3×</span>
-          )}
-        </div>
-        <div className="h-3 rounded-full overflow-hidden" style={{ background: 'var(--bg-raised)' }}>
-          <div
-            className={`h-full rounded-full transition-all duration-200 ${state.streakMeter >= 100 ? 'streak-full' : ''}`}
-            style={{
-              width: `${state.streakMeter}%`,
-              background: state.streakMeter >= 80
-                ? 'linear-gradient(90deg, #dc2626, #f97316)'
-                : state.streakMeter >= 50
-                ? 'linear-gradient(90deg, var(--green), #f97316)'
-                : 'linear-gradient(90deg, var(--green), var(--green-bright))',
-            }}
-          />
-        </div>
-      </div>
-
-      {/* ── Scanner toolbar (if scanner is pending) ───────────────────── */}
-      {hasScanner && (
-        <div className="px-4 pb-2 flex items-center gap-2">
-          <button
-            onClick={() => scannerActive ? onCancelScanner() : onActivateScanner('row')}
-            className="font-mono text-xs px-3 py-1.5 rounded cursor-pointer transition-colors"
-            style={{
-              background: scannerActive ? 'rgba(59,130,246,0.3)' : 'var(--bg-raised)',
-              border: `1px solid ${scannerActive ? '#3b82f6' : 'var(--border)'}`,
-              color: scannerActive ? '#60a5fa' : 'var(--text-muted)',
-            }}
-          >
-            🔍 Scanner {scannerActive ? '(active)' : ''}
-          </button>
-          {scannerActive && (
-            <>
-              <button onClick={() => onActivateScanner('row')}
-                className="font-mono text-xs px-2 py-1 rounded cursor-pointer"
-                style={{ background: state.pendingScannerAxis === 'row' ? '#3b82f6' : 'var(--bg-raised)', border: '1px solid var(--border)', color: '#fff' }}>
-                ROW →
-              </button>
-              <button onClick={() => onActivateScanner('col')}
-                className="font-mono text-xs px-2 py-1 rounded cursor-pointer"
-                style={{ background: state.pendingScannerAxis === 'col' ? '#3b82f6' : 'var(--bg-raised)', border: '1px solid var(--border)', color: '#fff' }}>
-                COL ↓
-              </button>
-              <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>then click a tile</span>
-            </>
-          )}
-        </div>
+        </>
       )}
+    </>
+  );
+}
 
-      {/* ── Bottom: active relics + consumables ──────────────────────── */}
-      {(state.relics.length > 0 || state.consumables.filter(c => c !== 'scanner').length > 0) && (
-        <div className="px-4 pb-2 flex flex-wrap gap-1">
-          {state.relics.map(r => {
-            const def = RELIC_MAP[r];
-            return (
-              <span key={r} className="font-mono text-xs px-2 py-0.5 rounded"
-                style={{ background: 'rgba(200,168,75,0.1)', border: '1px solid rgba(200,168,75,0.3)', color: 'var(--gold)' }}>
-                {def.emoji} {def.name}
-              </span>
-            );
-          })}
-          {state.consumables.filter(c => c !== 'scanner').map((c, i) => {
-            const def = ALL_CONSUMABLES.find(x => x.id === c)!;
-            return (
-              <span key={`${c}-${i}`} className="font-mono text-xs px-2 py-0.5 rounded"
-                style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)', color: '#60a5fa' }}>
-                {def.emoji} {def.name}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── Cashout button (bottom bar) ───────────────────────────────── */}
-      <div className="px-4 pb-3 flex items-center justify-between gap-3"
-           style={{ borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
-        <div className="font-mono text-sm">
-          <span style={{ color: 'var(--text-muted)' }}>BET </span>
-          <span style={{ color: 'var(--gold)' }}>${state.bet}</span>
-          {hasCashout && (
-            <span style={{ color: 'var(--text-muted)' }}> · {cashoutMult.toFixed(2)}×</span>
-          )}
-        </div>
-
-        <button
-          onClick={onCashout}
-          disabled={!hasCashout}
-          className={`font-display text-xl px-6 py-2 rounded-xl transition-all duration-200 ${hasCashout ? 'cashout-active cursor-pointer' : 'cursor-not-allowed'}`}
-          style={{
-            letterSpacing: '0.08em',
-            background: hasCashout ? 'var(--green)' : 'var(--bg-card)',
-            color: hasCashout ? '#000' : 'var(--text-dim)',
-            border: hasCashout ? '1px solid var(--green-bright)' : '1px solid var(--border)',
-          }}
-        >
-          {hasCashout ? `CASHOUT $${totalPayout}` : 'NEED MORE SCORE'}
-        </button>
-      </div>
+function StatRow({ label, value, valueColor, large }: {
+  label: string; value: string; valueColor?: string; large?: boolean;
+}) {
+  return (
+    <div className="flex justify-between items-baseline gap-1">
+      <span className="font-mono text-xs shrink-0" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>{label}</span>
+      <span className={`font-mono font-bold ${large ? 'text-base' : 'text-xs'}`}
+            style={{ color: valueColor ?? 'var(--text-primary)' }}>
+        {value}
+      </span>
     </div>
   );
 }
