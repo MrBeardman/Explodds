@@ -1,51 +1,70 @@
 import { LEVELS } from '../constants';
 
-interface Props {
-  onStart: () => void;
-}
+interface Props { onStart: () => void; }
 
 export function StartScreen({ onStart }: Props) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-8 p-8">
+    <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-6">
+      {/* Title */}
       <div className="text-center">
-        <div className="text-6xl mb-4">💣</div>
-        <h1 className="text-5xl font-black text-white tracking-tight mb-2">
-          Explodds
-        </h1>
-        <div className="text-yellow-400 font-semibold text-xl mb-4">Mine the Odds</div>
-        <p className="text-gray-400 max-w-sm mx-auto text-sm leading-relaxed">
-          A roguelite minesweeper. Clear tiles, build your multiplier, cash out before you blow up.
-          Survive 6 levels to win.
-        </p>
+        <div className="font-display text-7xl md:text-9xl text-glow-gold" style={{ color: 'var(--gold)' }}>
+          EXPLODDS
+        </div>
+        <div className="font-mono text-sm tracking-[0.3em] mt-1" style={{ color: 'var(--text-muted)' }}>
+          MINE THE ODDS
+        </div>
       </div>
 
-      {/* Level preview */}
+      <div className="gold-line w-64" />
+
+      {/* Round preview */}
       <div className="w-full max-w-sm">
-        <div className="text-xs text-gray-500 uppercase tracking-widest mb-3 text-center">6 Levels</div>
-        <div className="flex flex-col gap-1.5">
+        <div className="font-mono text-xs text-center mb-3" style={{ color: 'var(--text-muted)', letterSpacing: '0.2em' }}>
+          6 ROUNDS · PLACE BETS · CLEAR TILES
+        </div>
+        <div className="casino-panel p-1 overflow-hidden rounded-xl">
           {LEVELS.map(l => (
-            <div key={l.level} className="flex items-center justify-between px-3 py-2 bg-gray-900 border border-gray-800 rounded-lg text-sm">
-              <span className="text-gray-400">Lv {l.level}</span>
-              <span className="text-gray-300">{l.target.toLocaleString()} pts</span>
-              <span className="text-red-400">💣 ×{l.bombs}</span>
-              <span className="text-yellow-400">${l.payout}</span>
+            <div
+              key={l.round}
+              className="flex items-center justify-between px-3 py-2 text-sm"
+              style={{ borderBottom: l.round < 6 ? '1px solid var(--border)' : undefined }}
+            >
+              <span className="font-mono" style={{ color: l.isBoss ? 'var(--gold)' : 'var(--text-muted)' }}>
+                {l.isBoss ? '👑' : '  '} RD {l.round}
+              </span>
+              <span style={{ color: 'var(--text-primary)' }}>{l.target.toLocaleString()} pts</span>
+              <span style={{ color: 'var(--red)' }}>💣 ×{l.bombs}</span>
+              <span className="font-mono" style={{ color: l.isBoss ? 'var(--gold)' : 'var(--text-muted)' }}>
+                {l.isBoss ? 'BOSS' : ''}
+              </span>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="flex flex-col items-center gap-3">
-        <div className="flex gap-6 text-sm text-gray-500">
-          <span>❤️ 3 lives</span>
-          <span>💰 Start $0</span>
-          <span>🎯 5×5 grid</span>
-        </div>
-        <button
-          onClick={onStart}
-          className="px-10 py-4 bg-purple-600 hover:bg-purple-500 text-white font-black text-2xl rounded-xl transition-all shadow-lg shadow-purple-500/30 cursor-pointer hover:scale-105 active:scale-95"
-        >
-          Start Run
-        </button>
+      {/* Stats row */}
+      <div className="flex gap-6 text-sm font-mono" style={{ color: 'var(--text-muted)' }}>
+        <span>💵 Start $150</span>
+        <span>❤️ 3 lives</span>
+        <span>💎 Earn gems</span>
+      </div>
+
+      <button
+        onClick={onStart}
+        className="font-display text-2xl px-12 py-4 rounded-xl transition-all duration-200 cursor-pointer glow-green"
+        style={{
+          background: 'var(--green)',
+          color: '#000',
+          letterSpacing: '0.1em',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--green-bright)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'var(--green)')}
+      >
+        NEW RUN
+      </button>
+
+      <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
+        // TODO: sound
       </div>
     </div>
   );

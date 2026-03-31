@@ -1,38 +1,87 @@
 @import "tailwindcss";
 
-* {
-  box-sizing: border-box;
+/* ─── CSS Custom Properties (Casino Theme) ─── */
+:root {
+  --bg-base:      #080b10;
+  --bg-surface:   #0f1318;
+  --bg-raised:    #151b24;
+  --bg-card:      #1a2030;
+  --border:       #243040;
+  --border-glow:  #c8a84b;
+
+  --gold:         #c8a84b;
+  --gold-bright:  #f0c060;
+  --green:        #2ea84a;
+  --green-bright: #3dd65f;
+  --red:          #dc2626;
+  --blue:         #3b82f6;
+
+  --text-primary: #f0e8d8;
+  --text-muted:   #7a8090;
+  --text-dim:     #4a5060;
+
+  --font-display: 'Bebas Neue', sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+  --font-body:    'Inter', sans-serif;
 }
+
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: #0d0f14;
-  color: #e2e8f0;
-  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
 }
 
-#root {
+/* Felt texture on main background */
+.casino-root {
+  background-color: var(--bg-base);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, #0d1830 0%, var(--bg-base) 60%),
+    repeating-linear-gradient(
+      45deg,
+      transparent, transparent 3px,
+      rgba(255,255,255,0.005) 3px, rgba(255,255,255,0.005) 4px
+    );
   min-height: 100svh;
 }
 
-/* ─── Tile entrance (plays on mount, staggered via inline animationDelay) ─── */
+/* ─── Typography ─── */
+.font-display { font-family: var(--font-display); letter-spacing: 0.05em; }
+.font-mono    { font-family: var(--font-mono); }
+
+/* ─── Casino card / panel style ─── */
+.casino-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.casino-panel-raised {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+/* ─── Neon glow utilities ─── */
+.glow-gold  { box-shadow: 0 0 12px rgba(200, 168, 75, 0.4); }
+.glow-green { box-shadow: 0 0 12px rgba(46, 168, 74, 0.5); }
+.glow-red   { box-shadow: 0 0 12px rgba(220, 38, 38, 0.5); }
+
+.text-glow-gold  { text-shadow: 0 0 8px rgba(200, 168, 75, 0.6); }
+.text-glow-green { text-shadow: 0 0 8px rgba(61, 214, 95, 0.7); }
+
+/* ─── Tile animations ─── */
 @keyframes tileEntrance {
-  from {
-    opacity: 0;
-    transform: scale(0.65) translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
+  from { opacity: 0; transform: scale(0.65) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
-
 .tile-entrance {
-  animation: tileEntrance 280ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: tileEntrance 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
-/* ─── Tile reveal: shrinks then bounces back ─── */
 @keyframes tileReveal {
   0%   { transform: scale(1); }
   25%  { transform: scale(0.78); }
@@ -40,19 +89,57 @@ body {
   90%  { transform: scale(1.05); }
   100% { transform: scale(1); }
 }
-
 .tile-reveal {
-  animation: tileReveal 480ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+  animation: tileReveal 460ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
 }
 
-/* ─── Icon pop: scales from 0 inside the tile ─── */
 @keyframes iconPop {
   0%   { transform: scale(0) rotate(-15deg); opacity: 0; }
   60%  { transform: scale(1.25) rotate(5deg); opacity: 1; }
   80%  { transform: scale(0.92) rotate(-2deg); }
   100% { transform: scale(1) rotate(0deg); opacity: 1; }
 }
-
 .icon-pop {
-  animation: iconPop 420ms 120ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: iconPop 400ms 100ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ─── Streak fill animation ─── */
+@keyframes streakFill {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+.streak-full {
+  animation: streakFill 600ms ease-in-out infinite;
+}
+
+/* ─── Cashout button pulse ─── */
+@keyframes cashoutPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(46, 168, 74, 0.4); }
+  50%       { box-shadow: 0 0 20px rgba(46, 168, 74, 0.8), 0 0 40px rgba(46, 168, 74, 0.3); }
+}
+.cashout-active {
+  animation: cashoutPulse 1.5s ease-in-out infinite;
+}
+
+/* ─── Grid bomb flash ─── */
+@keyframes bombShake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-6px); }
+  40%       { transform: translateX(6px); }
+  60%       { transform: translateX(-4px); }
+  80%       { transform: translateX(4px); }
+}
+.bomb-shake {
+  animation: bombShake 400ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ─── Gold separator line ─── */
+.gold-line {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
 }

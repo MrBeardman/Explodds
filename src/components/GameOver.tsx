@@ -7,76 +7,85 @@ interface Props {
 }
 
 export function GameOver({ state, onRestart }: Props) {
-  const isWin = state.level > 6;
-  const reached = isWin ? 6 : state.level;
-  const unlockCurrency = calcUnlockCurrency(reached, state.totalMoneyEarned);
+  const tokens = state.runTokens;
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen gap-8 p-8">
-      <div className="text-center max-w-md">
-        <div className="text-6xl mb-4">{isWin ? '🏆' : '💥'}</div>
-        <h1 className="text-4xl font-black text-white mb-2">
-          {isWin ? 'You Won!' : 'Game Over'}
-        </h1>
-        <p className="text-gray-400 text-lg">
-          {isWin
-            ? 'You conquered all 6 levels!'
-            : `Reached Level ${reached}`
-          }
-        </p>
+    <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-6">
+      <div className="text-center">
+        <div className="text-6xl mb-3">💥</div>
+        <div className="font-display text-5xl" style={{ color: 'var(--red)', letterSpacing: '0.08em' }}>
+          GAME OVER
+        </div>
+        <div className="font-mono text-sm mt-2" style={{ color: 'var(--text-muted)' }}>
+          Reached round {state.round} of 6
+        </div>
       </div>
 
-      {/* Stats */}
-      <div className="w-full max-w-sm flex flex-col gap-3">
-        <StatRow label="Level Reached" value={`${reached} / 6`} color="text-purple-400" />
-        <StatRow label="Money Earned" value={`$${state.totalMoneyEarned}`} color="text-yellow-400" />
-        <StatRow label="Relics Collected" value={`${state.relics.length}`} color="text-blue-400" />
-        <StatRow label="Unlock Currency" value={`⚙ ${unlockCurrency}`} color="text-orange-400" />
+      <div className="gold-line w-48" />
+
+      <div className="casino-panel p-4 w-full max-w-sm flex flex-col gap-2">
+        <StatRow label="Round reached"        value={`${state.round} / 6`} />
+        <StatRow label="Rounds cleared"       value={`${state.roundsCleared}`} />
+        <StatRow label="Boss rounds cleared"  value={`${state.bossRoundsCleared}`} />
+        <StatRow label="Total tiles cleared"  value={`${state.totalTilesCleared}`} />
+        <StatRow label="Best multiplier"      value={`×${state.bestMultiplier.toFixed(1)}`} />
+        <StatRow label="Relics collected"     value={`${state.relics.length}`} />
+        <div className="gold-line my-1" />
+        <StatRow label="Cash remaining"       value={`$${state.cash}`}       color="var(--gold)" />
+        <StatRow label="Gems earned"          value={`💎 ${state.gems}`}      color="#60c0ff" />
+        <StatRow label="Run tokens earned"    value={`⚙ ${tokens}`}          color="var(--green)" />
       </div>
 
-      {/* Level breakdown */}
+      {/* Level completion grid */}
       <div className="w-full max-w-sm">
-        <div className="text-xs text-gray-500 uppercase tracking-widest mb-3 text-center">Level Targets</div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="font-mono text-xs text-center mb-2" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>
+          PROGRESS
+        </div>
+        <div className="grid grid-cols-6 gap-1.5">
           {LEVELS.map(l => {
-            const cleared = l.level < reached || (l.level === reached && isWin);
-            const current = l.level === reached && !isWin;
+            const cleared = l.round <= state.roundsCleared;
+            const current = l.round === state.round && !cleared;
             return (
               <div
-                key={l.level}
-                className={`p-2 rounded-lg border text-center text-xs
-                  ${cleared ? 'bg-green-900/40 border-green-700 text-green-400'
-                    : current ? 'bg-red-900/40 border-red-700 text-red-400'
-                    : 'bg-gray-900 border-gray-800 text-gray-600'
-                  }`}
+                key={l.round}
+                className="flex flex-col items-center p-2 rounded-lg text-center"
+                style={{
+                  background: cleared ? 'rgba(46,168,74,0.2)' : current ? 'rgba(220,38,38,0.2)' : 'var(--bg-card)',
+                  border: `1px solid ${cleared ? 'var(--green)' : current ? 'var(--red)' : 'var(--border)'}`,
+                }}
               >
-                <div className="font-bold">Lv {l.level}</div>
-                <div>{cleared ? '✓' : current ? '✗' : '—'}</div>
+                <div className="font-mono text-xs" style={{ color: l.isBoss ? 'var(--gold)' : 'var(--text-muted)' }}>
+                  {l.isBoss ? '👑' : `R${l.round}`}
+                </div>
+                <div className="text-sm">{cleared ? '✓' : current ? '✗' : '·'}</div>
               </div>
             );
           })}
         </div>
       </div>
 
+      <div className="font-mono text-xs text-center" style={{ color: 'var(--text-muted)' }}>
+        Seed: <span style={{ color: 'var(--text-primary)' }}>{state.seed.toString(16).toUpperCase()}</span>
+      </div>
+
       <button
         onClick={onRestart}
-        className="px-8 py-4 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xl rounded-xl transition-colors shadow-lg shadow-purple-500/20 cursor-pointer"
+        className="font-display text-2xl px-12 py-4 rounded-xl cursor-pointer transition-all duration-200"
+        style={{ background: 'var(--green)', color: '#000', letterSpacing: '0.1em' }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--green-bright)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'var(--green)')}
       >
-        Play Again
+        TRY AGAIN
       </button>
     </div>
   );
 }
 
-function StatRow({ label, value, color }: { label: string; value: string; color: string }) {
+function StatRow({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="flex justify-between items-center p-3 bg-gray-900 border border-gray-800 rounded-lg">
-      <span className="text-gray-400 text-sm">{label}</span>
-      <span className={`font-bold ${color}`}>{value}</span>
+    <div className="flex justify-between">
+      <span className="font-mono text-sm" style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span className="font-mono text-sm font-bold" style={{ color: color ?? 'var(--text-primary)' }}>{value}</span>
     </div>
   );
-}
-
-function calcUnlockCurrency(levelReached: number, moneyEarned: number): number {
-  return levelReached * 10 + Math.floor(moneyEarned / 5);
 }
