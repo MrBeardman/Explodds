@@ -143,3 +143,35 @@ body {
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--gold), transparent);
 }
+
+/* ─── Combo pop animation ─── */
+@keyframes comboPop {
+  0%   { opacity: 0; transform: scale(0.6) translateY(6px); }
+  30%  { opacity: 1; transform: scale(1.12) translateY(-2px); }
+  60%  { transform: scale(1.0) translateY(0); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-20px); }
+}
+.combo-pop {
+  animation: comboPop 1.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ─── Bust flash overlay ─── */
+@keyframes bustFlash {
+  0%   { opacity: 0; }
+  15%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.bust-flash {
+  animation: bustFlash 1.2s ease both;
+}
+
+/* ─── Cashout gold pulse ─── */
+@keyframes cashoutGoldPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(200,168,75,0.5); }
+  50%       { box-shadow: 0 0 24px rgba(200,168,75,0.9), 0 0 48px rgba(200,168,75,0.3); }
+}
+.cashout-active {
+  animation: cashoutGoldPulse 1.2s ease-in-out infinite !important;
+}

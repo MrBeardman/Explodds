@@ -1,264 +1,144 @@
 import {
-  GRID_SIZE, GRID_COLS, LEVELS, BOSS_BOMBS, SYMBOLS,
-  ALL_CONSUMABLES, ALL_RELICS, STARTING_CASH,
-  STREAK_PER_TILE, STREAK_BELL_BONUS, MAX_CONSUMABLE_SLOTS, MAX_RELIC_SLOTS,
-  PLACEABLE_CONSUMABLES, EVENT_CARDS,
+  GRID_SIZE, GRID_COLS, SYMBOLS, ALL_CONSUMABLES, ALL_RELICS,
+  STARTING_WALLET, MAX_SHOP_ITEMS, PLACEABLE_CONSUMABLES, EVENT_CARDS,
+  calcDeadline, calcBombs, calcTileBaseCash,
 } from './constants';
 import type {
-  GameState, Tile, SymbolId, RelicId, EventCardId,
-  ShopConsumableItem, ShopRelicItem, RoundSummaryData,
+  GameState, Tile, TileType, TileState, SymbolId,
+  EventCardId, ComboDisplay,
+  ShopConsumableItem, ShopRelicItem,
 } from './types';
 import { mulberry32, weightedChoice, rngShuffle, newSeed } from './rng';
 
-// ─── Dynamic bomb count ───────────────────────────────────────────────────────
+// ─── Symbol weight table (event card modifiers) ───────────────────────────────
 
-export function calcDynamicBombs(bet: number, cash: number, baseBombs: number): number {
-  const betRatio = bet / Math.max(cash * 0.5, 1);
-  const bonus = Math.floor(betRatio * 4);
-  return Math.min(Math.max(baseBombs, baseBombs + bonus), 20);
-}
-
-export function calcTileBaseValue(bet: number): number {
-  return 50 + Math.floor(bet / 10);
-}
-
-// ─── RNG helpers ──────────────────────────────────────────────────────────────
-
-function makeRng(state: GameState) {
-  // Derive a per-action RNG by using seed + gridKey as offset
-  return mulberry32(state.seed + state.gridKey * 1000 + state.round * 100);
-}
-
-// ─── Grid generation ──────────────────────────────────────────────────────────
-
-function getSymbolWeights(eventCard: EventCardId | null): Array<{ id: SymbolId; weight: number }> {
+function getSymbolWeights(
+  event: EventCardId | null,
+): Array<{ id: SymbolId; weight: number }> {
   return SYMBOLS.map(s => {
     let w = s.weight;
-    if (eventCard === 'cherry_season' && s.id === 'cherry')  w *= 2;
-    if (eventCard === 'banana_bonanza' && s.id === 'banana') w *= 2;
-    if (eventCard === 'star_shower' && s.id === 'star')      w *= 2;
-    if (eventCard === 'bell_ringer' && s.id === 'bell')      w *= 1.5; // more bells
-    if (eventCard === 'coin_rush' && s.id === 'coin')        w *= 3;
+    if (event === 'cherry_season'  && s.id === 'cherry')  w *= 2;
+    if (event === 'banana_bonanza' && s.id === 'banana')  w *= 2;
+    if (event === 'star_shower'    && s.id === 'star')    w *= 2;
+    if (event === 'coin_rush'      && s.id === 'coin')    w *= 2;
     return { id: s.id, weight: w };
   });
 }
 
-export function generateGrid(state: GameState): Tile[] {
-  const rng = makeRng(state);
-  const round = state.round;
-  const cfg = LEVELS[round - 1];
-  const isBoss = cfg.isBoss;
-  const activeEvent = state.activeEventCard;
+// ─── Board generation ─────────────────────────────────────────────────────────
 
-  // Dynamic bomb count based on bet (boss rounds use fixed layouts, skip dynamic)
-  const dynamicBase = isBoss ? cfg.bombs : calcDynamicBombs(state.bet, state.cash, cfg.bombs);
-  // Extra bombs from Danger Pay event (only for non-boss)
-  const extraBombs = (!isBoss && activeEvent === 'danger_pay') ? 2 : 0;
-  const totalBombs = Math.min(dynamicBase + extraBombs, GRID_SIZE - 1);
+export function generateBoard(state: GameState): Tile[] {
+  // Derive a deterministic-ish seed per attempt
+  const attemptKey = (3 - state.attempts_remaining) + 1;
+  const rng = mulberry32(state.seed + state.cycle_number * 1000 + attemptKey * 100);
 
-  // Initialize blank tiles
+  const bombCount = state.bombs_this_attempt;
+  const remaining = GRID_SIZE - bombCount;
+
+  // Compute empty count
+  let emptyCount: number;
+  const isLuckyBoard = state.active_event === 'lucky_board' && !state.lucky_board_used;
+  if (isLuckyBoard) {
+    emptyCount = 0;
+  } else {
+    let base = Math.round(remaining * 0.45);
+    if (state.active_event === 'safe_zone')            base = Math.max(0, base - 4);
+    if (state.relics.includes('safe_digger'))          base = Math.max(0, base - 3);
+    if (state.consumables_owned.includes('empty_eraser')) base = Math.max(0, base - 2);
+    emptyCount = base;
+  }
+  const symbolCount = remaining - emptyCount;
+
+  // Build & shuffle tile type assignments
+  const types: TileType[] = [
+    ...Array(bombCount).fill('bomb'),
+    ...Array(symbolCount).fill('symbol'),
+    ...Array(emptyCount).fill('empty'),
+  ] as TileType[];
+  const shuffled = rngShuffle(rng, Array.from({ length: GRID_SIZE }, (_, i) => i));
+
   const tiles: Tile[] = Array.from({ length: GRID_SIZE }, (_, i) => ({
-    id: i,
-    isBomb: false,
+    index: i,
+    state: 'hidden' as TileState,
+    type: 'empty' as TileType,
     symbol: null,
-    state: 'hidden' as const,
-    isDefused: false,
-    placedConsumable: null,
+    consumable: null,
+    combo_highlight: false,
   }));
 
-  // ── Bomb placement ──────────────────────────────────────────────────────────
-
-  let bombIndices: number[];
-
-  if (isBoss && BOSS_BOMBS[round]) {
-    bombIndices = BOSS_BOMBS[round].slice(0, totalBombs);
-  } else {
-    // Safe Zone event: one quadrant guaranteed bomb-free
-    let blockedIndices: number[] = [];
-    if (activeEvent === 'safe_zone') {
-      const quadrant = Math.floor(rng() * 4);
-      const quadrantTiles: Record<number, number[]> = {
-        0: [0,1,5,6],    // top-left 2×2
-        1: [3,4,8,9],    // top-right 2×2
-        2: [15,16,20,21],// bottom-left 2×2
-        3: [18,19,23,24],// bottom-right 2×2
-      };
-      blockedIndices = quadrantTiles[quadrant] ?? [];
-      // Store which quadrant is safe (we don't expose this to player via UI, just block bombs)
-    }
-
-    // Cartographer relic: one corner is forced safe
-    let safeCorner = -1;
-    if (state.relics.includes('cartographer')) {
-      const corners = [0, 4, 20, 24].filter(c => !blockedIndices.includes(c));
-      safeCorner = corners[Math.floor(rng() * corners.length)];
-    }
-
-    const eligible = Array.from({ length: GRID_SIZE }, (_, i) => i)
-      .filter(i => i !== safeCorner && !blockedIndices.includes(i));
-    const shuffled = rngShuffle(rng, eligible);
-    bombIndices = shuffled.slice(0, totalBombs);
+  // Assign types: shuffled[i] gets types[i]
+  for (let i = 0; i < GRID_SIZE; i++) {
+    tiles[shuffled[i]].type = types[i];
   }
 
-  for (const idx of bombIndices) {
-    tiles[idx].isBomb = true;
-  }
-
-  // ── Symbol assignment for safe tiles ───────────────────────────────────────
-
-  const weights = getSymbolWeights(activeEvent);
+  // Assign symbols to symbol tiles
+  const weights = getSymbolWeights(state.active_event);
   for (const tile of tiles) {
-    if (!tile.isBomb) {
+    if (tile.type === 'symbol') {
       tile.symbol = weightedChoice(rng, weights);
     }
   }
 
-  // ── Pre-round tool reveals ─────────────────────────────────────────────────
-
-  // Cartographer: hint a safe corner
-  if (state.relics.includes('cartographer') && !isBoss) {
-    const corners = [0, 4, 20, 24];
-    const safeCorners = corners.filter(i => !tiles[i].isBomb);
-    if (safeCorners.length > 0) {
-      const pick = safeCorners[Math.floor(rng() * safeCorners.length)];
-      tiles[pick].state = 'hinted';
+  // Lucky Charm relic: guarantee one coin tile (replace a non-bomb non-coin tile)
+  if (state.relics.includes('lucky_charm')) {
+    const candidates = tiles.filter(t => t.type !== 'bomb' && t.symbol !== 'coin');
+    if (candidates.length > 0) {
+      const pick = candidates[Math.floor(rng() * candidates.length)];
+      pick.type = 'symbol';
+      pick.symbol = 'coin';
     }
   }
 
-  // Scatter Reveal consumable: hint 3 random safe tiles
-  if (state.consumables.includes('scatter_reveal')) {
-    const hidden = tiles.filter(t => !t.isBomb && t.state === 'hidden');
-    const picks = rngShuffle(rng, hidden).slice(0, 3);
-    picks.forEach(t => { tiles[t.id].state = 'hinted'; });
-  }
-
-  // Lucky Scout event card: hint 2 random safe tiles
-  if (activeEvent === 'lucky_scout') {
-    const hidden = tiles.filter(t => !t.isBomb && t.state === 'hidden');
-    const picks = rngShuffle(rng, hidden).slice(0, 2);
-    picks.forEach(t => { tiles[t.id].state = 'hinted'; });
+  // Scatter Reveal: hint 3 safe (non-bomb) tiles
+  if (state.consumables_owned.includes('scatter_reveal')) {
+    const safeTiles = tiles.filter(t => t.type !== 'bomb');
+    const picks = rngShuffle(rng, safeTiles).slice(0, 3);
+    picks.forEach(t => { tiles[t.index].state = 'hinted'; });
   }
 
   return tiles;
 }
 
-// ─── Streak meter ─────────────────────────────────────────────────────────────
+// ─── Combo helpers ────────────────────────────────────────────────────────────
 
-function calcStreakGain(
-  symbol: SymbolId,
-  activeEvent: EventCardId | null,
-): number {
-  let gain = STREAK_PER_TILE;
-  if (symbol === 'bell') {
-    gain += STREAK_BELL_BONUS;
-    if (activeEvent === 'bell_ringer') gain += STREAK_BELL_BONUS; // 2× faster
-  }
-  return gain;
-}
-
-// ─── Cashout calculation ──────────────────────────────────────────────────────
-
-export function calcCashout(state: GameState): {
-  cashoutMult: number;
-  payout: number;
-  starBonus: number;
-  cherryCombo: boolean;
-  cherryBonus: number;
-  totalPayout: number;
-} {
-  const cfg = LEVELS[state.round - 1];
-  const targetScore = Math.round(cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1));
-  const cumulativeScore = state.cumulativeRoundScore + state.score;
-
-  // base_payout = bet × multiplier
-  let basePayout = Math.floor(state.bet * state.multiplier);
-
-  // Event card modifiers
-  if (state.activeEventCard === 'greed_mode')  basePayout = Math.floor(basePayout * 1.5);
-  if (state.activeEventCard === 'danger_pay')  basePayout = Math.floor(basePayout * 1.3);
-  if (state.activeEventCard === 'high_roller') basePayout = Math.floor(basePayout * 2.5);
-
-  // Overshoot bonus: 50% extra for each 100% over target
-  const overshoot = Math.max(0, (cumulativeScore - targetScore) / targetScore);
-  const overshootFactor = 1 + overshoot * 0.5;
-  const payout = Math.floor(basePayout * overshootFactor);
-
-  // Star bonus ($1 per star this attempt, $2 with Star Shower)
-  const perStar = state.activeEventCard === 'star_shower' ? 2 : 1;
-  const starBonus = state.starsThisAttempt * perStar;
-
-  // Cherry combo: 3+ in row/col this attempt = +50% of base payout
-  const cherryCombo = hasCherryCombo(state.grid, state.cherriesRevealed);
-  const cherryBonus = cherryCombo ? Math.floor(basePayout * 0.5) : 0;
-
-  // Relics
-  let relicBonus = 0;
-  if (state.relics.includes('greed_chip')) relicBonus += 2;
-  if (state.relics.includes('double_down')) {
-    const safeTiles = state.grid.filter(t => !t.isBomb).length;
-    if (state.tilesCleared >= Math.floor(safeTiles * 0.8)) relicBonus += payout;
-  }
-
-  const totalPayout = payout + starBonus + cherryBonus + relicBonus + state.luckyCharmBonus;
-
-  return {
-    cashoutMult: parseFloat(state.multiplier.toFixed(2)),
-    payout,
-    starBonus,
-    cherryCombo,
-    cherryBonus,
-    totalPayout: Math.floor(totalPayout),
-  };
-}
-
-function hasCherryCombo(_grid: Tile[], cherryIndices: number[]): boolean {
-  const cherrySet = new Set(cherryIndices);
-  // Check rows
+function hasCherryRowCol(cherryIndices: number[]): boolean {
+  const s = new Set(cherryIndices);
   for (let r = 0; r < 5; r++) {
-    let count = 0;
+    let n = 0;
     for (let c = 0; c < 5; c++) {
-      if (cherrySet.has(r * 5 + c)) { count++; if (count >= 3) return true; }
-      else count = 0;
+      n = s.has(r * 5 + c) ? n + 1 : 0;
+      if (n >= 3) return true;
     }
   }
-  // Check columns
   for (let c = 0; c < 5; c++) {
-    let count = 0;
+    let n = 0;
     for (let r = 0; r < 5; r++) {
-      if (cherrySet.has(r * 5 + c)) { count++; if (count >= 3) return true; }
-      else count = 0;
+      n = s.has(r * 5 + c) ? n + 1 : 0;
+      if (n >= 3) return true;
     }
   }
   return false;
 }
 
-
-// ─── Gem earning ──────────────────────────────────────────────────────────────
-
-function calcGemsForTile(
-  symbol: SymbolId,
-  relics: RelicId[],
-  activeEvent: EventCardId | null
-): number {
-  let gems = 1; // base: 1 gem per tile
-  if (symbol === 'coin') {
-    gems += 1; // coin: +1 extra
-    if (activeEvent === 'coin_rush') gems += 1;  // coin rush: +1 more
-    if (relics.includes('gem_cutter')) gems += 2; // gem cutter: total +3 from coin
+function hasAdjacentBananas(bananaIndices: number[]): boolean {
+  const s = new Set(bananaIndices);
+  for (const idx of bananaIndices) {
+    const c = idx % 5;
+    if (c < 4 && s.has(idx + 1)) return true;
+    if (idx + 5 < GRID_SIZE && s.has(idx + 5)) return true;
   }
-  if (symbol === 'star' && relics.includes('star_collector')) gems += 2;
-  return gems;
+  return false;
 }
 
-// ─── Magnet: find nearest safe hidden tile ────────────────────────────────────
+// ─── Magnet: nearest safe hidden tile ────────────────────────────────────────
 
-function magnetReveal(state: GameState, lastIdx: number): number | null {
-  const candidates = state.grid
-    .filter(t => !t.isBomb && (t.state === 'hidden' || t.state === 'hinted'))
+function magnetReveal(board: Tile[], lastIdx: number): number | null {
+  const candidates = board
+    .filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted'))
     .map(t => ({
-      id: t.id,
-      dist: Math.abs(Math.floor(t.id / 5) - Math.floor(lastIdx / 5))
-            + Math.abs((t.id % 5) - (lastIdx % 5)),
+      id: t.index,
+      dist: Math.abs(Math.floor(t.index / 5) - Math.floor(lastIdx / 5))
+          + Math.abs((t.index % 5) - (lastIdx % 5)),
     }))
     .sort((a, b) => a.dist - b.dist);
   return candidates[0]?.id ?? null;
@@ -267,304 +147,455 @@ function magnetReveal(state: GameState, lastIdx: number): number | null {
 // ─── Tile click handler ───────────────────────────────────────────────────────
 
 export function handleTileClick(state: GameState, tileIndex: number): GameState {
-  const tile = state.grid[tileIndex];
-  if (tile.state === 'revealed' || tile.state === 'defused') return state;
-  if (state.phase !== 'playing') return state;
+  if (state.phase !== 'CLEARING') return state;
 
-  // Scanner placement mode
-  if (state.pendingScannerAxis !== null) {
+  const tile = state.board[tileIndex];
+  if (tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return state;
+
+  // Scanner mode
+  if (state.pending_scanner_axis !== null) {
     return applyScanner(state, tileIndex);
   }
 
-  const newGrid = state.grid.map(t => ({ ...t }));
+  const newBoard = state.board.map(t => ({ ...t }));
 
-  // ── Bomb click ────────────────────────────────────────────────────────────
+  // ── Bomb ──────────────────────────────────────────────────────────────────
 
-  if (tile.isBomb) {
-    // Defuser check
-    if (tile.isDefused || tile.placedConsumable === 'defuser') {
-      newGrid[tileIndex].state = 'defused';
-      newGrid[tileIndex].isDefused = true;
-      return { ...state, grid: newGrid };
+  if (tile.type === 'bomb') {
+    // Defuser: neutralise bomb
+    if (tile.consumable === 'defuser') {
+      newBoard[tileIndex].state = 'empty_revealed';
+      newBoard[tileIndex].type = 'empty';
+      return { ...state, board: newBoard };
     }
 
-    // Safety Net relic (one per run) + Steady Hands event card (one per round)
-    const safetyNetActive = state.relics.includes('safety_net') && !state.safetyNetUsed;
-    const steadyHandsActive = state.activeEventCard === 'steady_hands' && !state.steadyHandsUsed;
-    const betProtected = safetyNetActive || steadyHandsActive;
-
-    // Dead Man's Hand: gain 40% of current attempt score as cash bonus
-    let bonusCash = 0;
-    if (state.relics.includes('dead_mans_hand') && state.score > 0) {
-      bonusCash = Math.floor(state.score * 0.4);
+    // Bomb Suit relic: first bust refunds bet
+    let newWallet = state.wallet;
+    if (state.relics.includes('bomb_suit') && !state.bomb_suit_used) {
+      newWallet += state.current_bet;
     }
 
-    const betLoss = betProtected ? 0 : state.bet;
-    const newCash = state.cash - betLoss + bonusCash;
-    const newCumulative = state.cumulativeRoundScore + state.score;
+    newBoard[tileIndex].state = 'bomb_hit';
+    const newAttempts = state.attempts_remaining - 1;
 
-    const bustMsg = betProtected
-      ? '🛡 PROTECTED! Bet saved'
-      : `💣 BUST! -$${betLoss}${bonusCash > 0 ? ` (+$${bonusCash} bonus)` : ''}`;
-
-    // Cash at or below 0 → game over
-    if (newCash <= 0) {
-      return {
-        ...state,
-        cash: Math.max(0, newCash),
-        totalCashEarned: state.totalCashEarned + bonusCash,
-        cumulativeRoundScore: newCumulative,
-        phase: 'gameover',
-        runTokens: calcRunTokens(state.roundsCleared, state.bossRoundsCleared),
-        safetyNetUsed: safetyNetActive ? true : state.safetyNetUsed,
-        steadyHandsUsed: steadyHandsActive ? true : state.steadyHandsUsed,
-      };
-    }
-
-    // Cash remains → return to bet phase for another attempt
     return {
       ...state,
-      cash: newCash,
-      totalCashEarned: state.totalCashEarned + bonusCash,
-      phase: 'bet',
-      bustMessage: bustMsg,
-      cumulativeRoundScore: newCumulative,
-      roundAttempts: state.roundAttempts + 1,
-      safetyNetUsed: safetyNetActive ? true : state.safetyNetUsed,
-      steadyHandsUsed: steadyHandsActive ? true : state.steadyHandsUsed,
+      board: newBoard,
+      phase: 'BUST_FLASH',
+      wallet: newWallet,
+      attempts_remaining: newAttempts,
+      bomb_suit_used: state.relics.includes('bomb_suit') ? true : state.bomb_suit_used,
+      attempt_earnings: 0,
+      multiplier: 1.0,
+      streak: 0,
+      streak_5_given: false,
+      streak_10_given: false,
+      streak_15_given: false,
+      banana_tile_earnings: [],
+      tiles_cleared: 0,
+      magnet_clears: 0,
+      combos_triggered: [],
+      active_combo_display: [],
     };
   }
 
-  // ── Safe tile click ───────────────────────────────────────────────────────
+  // ── Empty tile ────────────────────────────────────────────────────────────
 
-  const symbol = tile.symbol!;
-  const cfg = LEVELS[state.round - 1];
-
-  // Multiplier
-  const safeTilesLeft = state.grid.filter(t => !t.isBomb && (t.state === 'hidden' || t.state === 'hinted')).length;
-  let multGain = (0.1 * cfg.bombs) / 5;
-  if (state.relics.includes('adrenaline_core') && safeTilesLeft < 8) multGain *= 1.25;
-  const newMultiplier = parseFloat((state.multiplier + multGain).toFixed(2));
-  const newBestMult = Math.max(state.bestMultiplier, newMultiplier);
-
-  // Points — base value scales with bet; streak guaranteed tile gives 3×
-  const tileBase = calcTileBaseValue(state.bet);
-  let points = Math.round(tileBase * state.multiplier);
-  if (state.streakGuaranteed) points *= 3;
-  let lensCount = state.multiplierLensCount;
-  if (tile.placedConsumable === 'multiplier_lens') lensCount = 4; // activate
-  else if (lensCount > 0) { points *= 2; lensCount--; }
-
-  // Lucky Charm placed on this tile
-  let newCharmBonus = state.luckyCharmBonus;
-  if (tile.placedConsumable === 'lucky_charm') newCharmBonus += 3;
-
-  const newScore = state.score + points;
-
-  // Gems
-  const gemsGained = calcGemsForTile(symbol, state.relics, state.activeEventCard);
-  const newGems = state.gems + gemsGained;
-  const newGemsThisRound = state.gemsThisRound + gemsGained;
-
-  // Symbol tracking
-  const newStars = symbol === 'star' ? state.starsThisAttempt + 1 : state.starsThisAttempt;
-  const newCherries = symbol === 'cherry' ? [...state.cherriesRevealed, tileIndex] : state.cherriesRevealed;
-
-  // Streak meter
-  let newMeter = state.streakMeter + calcStreakGain(symbol, state.activeEventCard);
-  let newGuaranteed = state.streakGuaranteed;
-  let newBellsStreak = state.bellsThisStreak + (symbol === 'bell' ? 1 : 0);
-
-  // Bell Choir relic: every 3 bells → instant fill
-  if (state.relics.includes('bell_choir') && symbol === 'bell' && newBellsStreak % 3 === 0) {
-    newMeter = 100;
+  if (tile.type === 'empty') {
+    newBoard[tileIndex].state = 'empty_revealed';
+    return {
+      ...state,
+      board: newBoard,
+      streak: 0,
+      streak_5_given: false,
+      streak_10_given: false,
+      streak_15_given: false,
+    };
   }
 
-  if (newMeter >= 100) {
-    newMeter = state.streakGuaranteed ? 0 : 99; // cap until used
-    if (state.streakGuaranteed) {
-      // Was guaranteed, just used it — reset
-      newMeter = 0;
-      newGuaranteed = false;
+  // ── Symbol tile ───────────────────────────────────────────────────────────
+
+  const symbol = tile.symbol!;
+  newBoard[tileIndex].state = 'revealed';
+
+  // Base cash
+  const baseCash = calcTileBaseCash(state.current_bet);
+  let symbolMod = getSymbolMod(symbol, state.active_event);
+  let cash = baseCash * symbolMod * state.multiplier;
+
+  // Danger Pay event: tile value ×1.4
+  if (state.active_event === 'danger_pay') cash *= 1.4;
+
+  // Lucky Tile consumable on this specific tile
+  let luckyBonus = 0;
+  if (tile.consumable === 'lucky_tile') luckyBonus = 5;
+
+  cash = parseFloat(cash.toFixed(2));
+
+  // Banana tracking for Banana Split retroactive calc
+  const newBananaEarnings = symbol === 'banana'
+    ? [...state.banana_tile_earnings, cash]
+    : state.banana_tile_earnings;
+
+  // Multiplier growth
+  const baseGain = 0.08 + state.bombs_this_attempt * 0.01;
+  const multGain = state.relics.includes('adrenaline_core') ? baseGain * 1.2 : baseGain;
+  let newMult = parseFloat((state.multiplier + multGain).toFixed(3));
+
+  // Streak
+  let newStreak = state.streak + 1;
+  let s5 = state.streak_5_given;
+  let s10 = state.streak_10_given;
+  let s15 = state.streak_15_given;
+  let streakBonus = 0;
+
+  if (newStreak >= 5 && !s5) {
+    if (state.relics.includes('hot_hands')) {
+      streakBonus += 8;          // Hot Hands: flat cash instead of mult boost
     } else {
-      newGuaranteed = true;
-      newMeter = 100;
+      newMult = parseFloat((newMult + 0.2).toFixed(3));
+    }
+    s5 = true;
+  }
+  if (newStreak >= 10 && !s10) {
+    newMult = parseFloat((newMult + 0.5).toFixed(3));
+    s10 = true;
+  }
+  if (newStreak >= 15 && !s15) {
+    streakBonus += 5;
+    s15 = true;
+  }
+
+  const newTilesCleared = state.tiles_cleared + 1;
+
+  // Tile Magnet: auto-reveal nearest safe every 5 clears
+  let newMagnetClears = state.magnet_clears + 1;
+  if (state.consumables_owned.includes('tile_magnet') && newMagnetClears >= 5) {
+    newMagnetClears = 0;
+    const target = magnetReveal(newBoard, tileIndex);
+    if (target !== null) newBoard[target].state = 'hinted';
+  }
+
+  // Earnings so far (before combo checks)
+  let newEarnings = state.attempt_earnings + cash + luckyBonus + streakBonus;
+  let newTickets = state.tickets;
+
+  // ── Combo checks ──────────────────────────────────────────────────────────
+  const triggered = [...state.combos_triggered];
+  const display: ComboDisplay[] = [...state.active_combo_display];
+  let comboId = state.combo_id_counter;
+  let bellStormStreak: number | null = null;
+
+  // Cherry Rush
+  if (!triggered.includes('cherry_rush')) {
+    const cherryIdxs = newBoard
+      .filter(t => t.state === 'revealed' && t.symbol === 'cherry')
+      .map(t => t.index);
+    if (hasCherryRowCol(cherryIdxs)) {
+      const reward = state.relics.includes('cherry_picker') ? 20 : 12;
+      newEarnings += reward;
+      triggered.push('cherry_rush');
+      display.push({ text: '🍒 CHERRY RUSH!', amount: `+$${reward}`, color: '#ff6b6b', id: comboId++ });
     }
   }
 
-  // After using guaranteed tile, reset meter
-  if (state.streakGuaranteed) {
-    newMeter = 0;
-    newGuaranteed = false;
+  // Banana Split
+  if (!triggered.includes('banana_split')) {
+    const bananaIdxs = newBoard
+      .filter(t => t.state === 'revealed' && t.symbol === 'banana')
+      .map(t => t.index);
+    if (hasAdjacentBananas(bananaIdxs)) {
+      const mult = state.relics.includes('banana_baron') ? 3 : 2;
+      const bonusAmt = newBananaEarnings.reduce((s, e) => s + e * (mult - 1), 0);
+      newEarnings += parseFloat(bonusAmt.toFixed(2));
+      triggered.push('banana_split');
+      display.push({ text: '🍌 BANANA SPLIT!', amount: `×${mult}`, color: '#ffd93d', id: comboId++ });
+      // Highlight banana tiles
+      for (const bi of bananaIdxs) newBoard[bi].combo_highlight = true;
+    }
   }
 
-  newGrid[tileIndex].state = 'revealed';
-
-  const newTilesCleared = state.tilesCleared + 1;
-
-  // Chain Reaction relic: every 5 clears → +0.5 multiplier
-  let newConsecutive = state.consecutiveClears + 1;
-  let chainBonus = 0;
-  if (state.relics.includes('chain_reaction') && newConsecutive % 5 === 0) {
-    chainBonus = 0.5;
+  // Star Power
+  if (!triggered.includes('star_power')) {
+    const starCount = newBoard.filter(t => t.state === 'revealed' && t.symbol === 'star').length;
+    if (starCount >= 3) {
+      const reward = state.relics.includes('star_magnet') ? 28 : 18;
+      newEarnings += reward;
+      triggered.push('star_power');
+      display.push({ text: '⭐ STAR POWER!', amount: `+$${reward}`, color: '#ffe66d', id: comboId++ });
+    }
   }
 
-  // Magnet consumable: every 5 clears → auto-reveal nearest safe
-  let newClearsMagnet = state.clearsSinceMagnet + 1;
-  let magnetTarget: number | null = null;
-  if (state.consumables.includes('magnet') && newClearsMagnet >= 5) {
-    newClearsMagnet = 0;
-    magnetTarget = magnetReveal({ ...state, grid: newGrid }, tileIndex);
-    if (magnetTarget !== null) newGrid[magnetTarget].state = 'hinted';
+  // Bell Storm
+  if (!triggered.includes('bell_storm')) {
+    const bellCount = newBoard.filter(t => t.state === 'revealed' && t.symbol === 'bell').length;
+    const threshold = state.active_event === 'bell_ringer' ? 3 : 4;
+    if (bellCount >= threshold) {
+      const stormStreak = state.relics.includes('bell_captain') ? 20 : 10;
+      bellStormStreak = stormStreak;
+      triggered.push('bell_storm');
+      display.push({ text: '🔔 BELL STORM!', amount: `STREAK ×${stormStreak}`, color: '#60a5fa', id: comboId++ });
+    }
   }
 
-  const targetScore = Math.round(
-    cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1)
-  );
-  // Cashout available when cumulative + current attempt score >= target
-  const canCashout = state.cumulativeRoundScore + newScore >= targetScore;
+  // Diamond Run
+  if (!triggered.includes('diamond_run')) {
+    const diaCount = newBoard.filter(t => t.state === 'revealed' && t.symbol === 'diamond').length;
+    if (diaCount >= 4) {
+      const pct = state.relics.includes('diamond_dealer') ? 0.25 : 0.15;
+      const bonus = parseFloat((newEarnings * pct).toFixed(2));
+      newEarnings += bonus;
+      triggered.push('diamond_run');
+      display.push({ text: '💎 DIAMOND RUN!', amount: `+${Math.round(pct * 100)}%`, color: '#22d3ee', id: comboId++ });
+    }
+  }
 
-  const newState: GameState = {
+  // Coin Jackpot
+  if (!triggered.includes('coin_jackpot')) {
+    const coinCount = newBoard.filter(t => t.state === 'revealed' && t.symbol === 'coin').length;
+    if (coinCount >= 2) {
+      const base = state.relics.includes('coin_tycoon') ? 8 : 4;
+      const reward = state.active_event === 'coin_rush' ? 6 : base;
+      newTickets += reward;
+      triggered.push('coin_jackpot');
+      display.push({ text: '🪙 COIN JACKPOT!', amount: `+${reward}🎫`, color: '#f0f0f0', id: comboId++ });
+    }
+  }
+
+  const finalStreak = bellStormStreak !== null ? bellStormStreak : newStreak;
+  const newHighMult = Math.max(state.highest_multiplier, newMult);
+  const newBestStreak = Math.max(state.best_streak, finalStreak);
+
+  return {
     ...state,
-    grid: newGrid,
-    score: newScore,
-    multiplier: parseFloat((newMultiplier + chainBonus).toFixed(2)),
-    bestMultiplier: newBestMult,
-    canCashout,
-    starsThisAttempt: newStars,
-    cherriesRevealed: newCherries,
-    gemsThisRound: newGemsThisRound,
-    gems: newGems,
-    streakMeter: Math.min(newMeter, 100),
-    streakGuaranteed: newGuaranteed,
-    bellsThisStreak: newBellsStreak,
-    consecutiveClears: newConsecutive,
-    clearsSinceMagnet: newClearsMagnet,
-    tilesCleared: newTilesCleared,
-    totalTilesCleared: state.totalTilesCleared + 1,
-    multiplierLensCount: lensCount,
-    luckyCharmBonus: newCharmBonus,
+    board: newBoard,
+    attempt_earnings: parseFloat(newEarnings.toFixed(2)),
+    multiplier: newMult,
+    streak: finalStreak,
+    streak_5_given: s5,
+    streak_10_given: s10,
+    streak_15_given: s15,
+    banana_tile_earnings: newBananaEarnings,
+    tiles_cleared: newTilesCleared,
+    magnet_clears: newMagnetClears,
+    tickets: newTickets,
+    combos_triggered: triggered,
+    active_combo_display: display,
+    combo_id_counter: comboId,
+    highest_multiplier: newHighMult,
+    best_streak: newBestStreak,
   };
+}
 
-  return newState;
+function getSymbolMod(symbol: SymbolId, event: EventCardId | null): number {
+  const mods: Record<SymbolId, number> = {
+    diamond: 1.0,
+    cherry: 0.8,
+    banana: 1.2,
+    star: event === 'star_shower' ? 1.5 * 1.5 : 1.5,
+    bell: 0.9,
+    coin: 2.0,
+  };
+  return mods[symbol];
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 function applyScanner(state: GameState, tileIndex: number): GameState {
-  const axis = state.pendingScannerAxis!;
+  const axis = state.pending_scanner_axis!;
   const row = Math.floor(tileIndex / GRID_COLS);
   const col = tileIndex % GRID_COLS;
 
-  const newGrid = state.grid.map((t, i) => {
-    const tRow = Math.floor(i / GRID_COLS), tCol = i % GRID_COLS;
+  const newBoard = state.board.map((t) => {
+    const tRow = Math.floor(t.index / GRID_COLS);
+    const tCol = t.index % GRID_COLS;
     const match = axis === 'row' ? tRow === row : tCol === col;
-    if (!match || t.state === 'revealed' || t.state === 'defused') return t;
-    if (t.isBomb) return { ...t, state: 'revealed' as const };
-    return { ...t, state: 'hinted' as const };
+    if (!match || t.state === 'revealed' || t.state === 'bomb_hit' || t.state === 'empty_revealed') return t;
+    if (t.type === 'bomb') return { ...t, state: 'revealed' as TileState };
+    if (t.type === 'empty') return { ...t, state: 'empty_revealed' as TileState };
+    return { ...t, state: 'hinted' as TileState };
   });
 
   return {
     ...state,
-    grid: newGrid,
-    pendingScannerAxis: null,
-    consumables: removeOne(state.consumables, 'scanner'),
+    board: newBoard,
+    pending_scanner_axis: null,
+    consumables_owned: removeOne(state.consumables_owned, 'scanner'),
   };
 }
 
-// ─── Cashout handler ──────────────────────────────────────────────────────────
+// ─── Cashout ──────────────────────────────────────────────────────────────────
 
 export function handleCashout(state: GameState): GameState {
-  const { totalPayout, cashoutMult, starBonus, cherryCombo } = calcCashout(state);
-  const newCash = state.cash + totalPayout;
-  const newTotalEarned = state.totalCashEarned + totalPayout;
+  let earnings = state.attempt_earnings;
 
-  const cfg = LEVELS[state.round - 1];
-  const totalSafe = state.grid.filter(t => !t.isBomb).length;
+  // Greed Mode: +30% on cashout
+  if (state.active_event === 'greed_mode') {
+    earnings = parseFloat((earnings * 1.3).toFixed(2));
+  }
 
-  // Gem bonuses for good clears
-  let bonusGems = 0;
-  if (state.tilesCleared >= Math.floor(totalSafe * 0.7)) bonusGems += 3;
-  if (state.tilesCleared >= totalSafe) bonusGems += 5;
-  const finalGems = state.gems + bonusGems;
-  const finalGemsThisRound = state.gemsThisRound + bonusGems;
+  // Greed Chip relic: +$3 flat
+  if (state.relics.includes('greed_chip')) earnings += 3;
 
-  // Streak meter: Lucky Streak relic resets to 50%, otherwise 0
-  const newMeter = state.relics.includes('lucky_streak') ? 50 : 0;
+  const newWallet = parseFloat((state.wallet + earnings).toFixed(2));
+  const newDeposited = parseFloat((state.deposited + earnings).toFixed(2));
+  const newTotalEarned = parseFloat((state.total_earned + earnings).toFixed(2));
 
-  const summary: RoundSummaryData = {
-    won: true,
-    round: state.round,
-    isBoss: state.isBossRound,
-    score: state.score,
-    cumulativeScore: state.cumulativeRoundScore + state.score,
-    bet: state.bet,
-    payout: totalPayout,
-    cashoutMult,
-    gemsEarned: finalGemsThisRound,
-    tilesCleared: state.tilesCleared,
-    totalSafeTiles: totalSafe,
-    multiplierReached: state.bestMultiplier,
-    starBonus,
-    cherryCombo,
-    luckyCharmBonus: state.luckyCharmBonus,
-    attempts: state.roundAttempts,
+  // Ticket awards
+  let ticketBonus = 2; // always +2 on cashout
+  if (earnings > state.current_bet * 1.5) ticketBonus += 3; // profitable clear
+  const newTickets = state.tickets + ticketBonus;
+
+  const newAttempts = state.attempts_remaining - 1;
+
+  const baseState: Partial<GameState> = {
+    wallet: newWallet,
+    deposited: newDeposited,
+    tickets: newTickets,
+    total_earned: newTotalEarned,
+    attempts_remaining: newAttempts,
+    attempt_earnings: 0,
+    multiplier: 1.0,
+    streak: 0,
+    streak_5_given: false,
+    streak_10_given: false,
+    streak_15_given: false,
+    banana_tile_earnings: [],
+    tiles_cleared: 0,
+    magnet_clears: 0,
+    combos_triggered: [],
+    active_combo_display: [],
+    consumables_placed: [],
+    pending_scanner_axis: null,
+    board: [],
   };
 
-  const newRoundsCleared = state.roundsCleared + 1;
-  const newBossCleared = cfg.isBoss ? state.bossRoundsCleared + 1 : state.bossRoundsCleared;
+  if (newAttempts > 0) {
+    return { ...state, ...baseState, phase: 'BET' };
+  } else {
+    return endCycleCheck({ ...state, ...baseState } as GameState);
+  }
+}
 
-  // Check for win
-  if (state.round >= 6) {
+// ─── End-of-cycle check ───────────────────────────────────────────────────────
+
+export function endCycleCheck(state: GameState): GameState {
+  if (state.wallet >= state.deadline) {
+    const afterDeadline = parseFloat((state.wallet - state.deadline).toFixed(2));
+
+    // Interest bonus: leftover > 30% of deadline
+    let interestBonus = 0;
+    if (afterDeadline > state.deadline * 0.3) {
+      interestBonus = Math.floor(afterDeadline * 0.15);
+    }
+
+    const shop = generateShop(state);
+
     return {
       ...state,
-      cash: newCash,
-      gems: finalGems,
-      totalCashEarned: newTotalEarned,
-      streakMeter: 0,
-      roundsCleared: newRoundsCleared,
-      bossRoundsCleared: newBossCleared,
-      phase: 'win',
-      roundSummary: summary,
-      runTokens: calcRunTokens(newRoundsCleared, newBossCleared),
+      wallet: afterDeadline + interestBonus,
+      deposited: 0,
+      phase: 'SHOP',
+      cycles_survived: state.cycles_survived + 1,
+      shop_consumables: shop.consumables,
+      shop_relics: shop.relics,
+      shop_consumables_rerolled: false,
+      shop_relics_rerolled: false,
     };
   }
 
-  // Boss round → show boss reward before shop
-  const nextPhase = cfg.isBoss ? 'boss_reward' : 'round_summary';
-  const bossRewardOptions = cfg.isBoss ? pickBossRelics(state.relics) : [];
+  return { ...state, phase: 'GAME_OVER' };
+}
+
+// ─── Start attempt (from BET phase → generate board) ─────────────────────────
+
+export function handlePlaceBet(state: GameState): GameState {
+  const bet = state.current_bet;
+  const newWallet = parseFloat((state.wallet - bet).toFixed(2));
+
+  if (newWallet < 0) {
+    return { ...state, wallet: 0, phase: 'GAME_OVER' };
+  }
+
+  const bombs = calcBombs(bet, state.wallet, state.cycle_number);
+
+  // Hot Streak: start with streak 5
+  const initialStreak = state.active_event === 'hot_streak' ? 5 : 0;
+  const initialS5 = state.active_event === 'hot_streak';
+
+  // Danger Pay: +3 extra bombs
+  const totalBombs = state.active_event === 'danger_pay'
+    ? Math.min(bombs + 3, 24)
+    : bombs;
+
+  const nextState: GameState = {
+    ...state,
+    wallet: newWallet,
+    bombs_this_attempt: totalBombs,
+    attempt_earnings: 0,
+    multiplier: 1.0,
+    streak: initialStreak,
+    streak_5_given: initialS5,
+    streak_10_given: false,
+    streak_15_given: false,
+    banana_tile_earnings: [],
+    tiles_cleared: 0,
+    magnet_clears: 0,
+    combos_triggered: [],
+    active_combo_display: [],
+    consumables_placed: [],
+    pending_scanner_axis: null,
+    lucky_board_used: state.active_event === 'lucky_board' ? true : state.lucky_board_used,
+  };
+
+  const board = generateBoard(nextState);
+
+  // Remove auto-used consumables
+  const newConsumables = state.consumables_owned.filter(
+    c => c !== 'scatter_reveal' && c !== 'empty_eraser'
+  );
+
+  // Placement queue for defuser + lucky_tile
+  const queue = newConsumables.filter(c => PLACEABLE_CONSUMABLES.includes(c));
+  const nextPhase = queue.length > 0 ? 'PLACEMENT' : 'CLEARING';
 
   return {
-    ...state,
-    cash: newCash,
-    gems: finalGems,
-    totalCashEarned: newTotalEarned,
-    streakMeter: newMeter,
-    roundsCleared: newRoundsCleared,
-    bossRoundsCleared: newBossCleared,
+    ...nextState,
+    board,
     phase: nextPhase,
-    roundSummary: summary,
-    bossRewardOptions,
-    runTokens: calcRunTokens(newRoundsCleared, newBossCleared),
+    consumables_owned: newConsumables,
+    placement_queue: queue,
+    placing_index: queue.length > 0 ? 0 : -1,
   };
 }
 
-function pickBossRelics(ownedRelics: RelicId[]): RelicId[] {
-  const pool = ALL_RELICS.filter(r => !ownedRelics.includes(r.id)).map(r => r.id);
-  const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, 3);
+// ─── Bust flash end ───────────────────────────────────────────────────────────
+
+export function handleBustFlashEnd(state: GameState): GameState {
+  if (state.attempts_remaining > 0) {
+    return { ...state, phase: 'BET', board: [] };
+  }
+  return endCycleCheck(state);
 }
 
 // ─── Shop generation ──────────────────────────────────────────────────────────
 
-export function generateShop(state: GameState): { consumables: ShopConsumableItem[]; relics: ShopRelicItem[] } {
-  const rng = mulberry32(state.seed + state.round * 777);
-  const shuffledCons = rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_CONSUMABLE_SLOTS);
-  const shuffledRels = rngShuffle(rng, ALL_RELICS.map(r => ({
-    ...r,
-    owned: state.relics.includes(r.id),
-    sold: false,
-  }))).filter(r => !r.owned).slice(0, MAX_RELIC_SLOTS);
+export function generateShop(state: GameState): {
+  consumables: ShopConsumableItem[];
+  relics: ShopRelicItem[];
+} {
+  const rng = mulberry32(state.seed + state.cycle_number * 777);
+  const shuffledCons = rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_SHOP_ITEMS);
+  const shuffledRels = rngShuffle(
+    rng,
+    ALL_RELICS.map(r => ({
+      ...r,
+      owned: state.relics.includes(r.id),
+      sold: false,
+    }))
+  )
+    .filter(r => !r.owned)
+    .slice(0, MAX_SHOP_ITEMS);
 
   return {
     consumables: shuffledCons.map(c => ({ ...c, sold: false })),
@@ -572,160 +603,117 @@ export function generateShop(state: GameState): { consumables: ShopConsumableIte
   };
 }
 
-export function rerollConsumableShop(state: GameState): ShopConsumableItem[] {
-  const rng = mulberry32(state.seed + state.round * 777 + 999);
-  return rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_CONSUMABLE_SLOTS).map(c => ({ ...c, sold: false }));
+export function rerollConsumables(state: GameState): ShopConsumableItem[] {
+  const rng = mulberry32(state.seed + state.cycle_number * 777 + 999);
+  return rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_SHOP_ITEMS).map(c => ({ ...c, sold: false }));
 }
 
-export function rerollRelicShop(state: GameState): ShopRelicItem[] {
-  const rng = mulberry32(state.seed + state.round * 777 + 1999);
-  return rngShuffle(rng, ALL_RELICS.map(r => ({
-    ...r,
-    owned: state.relics.includes(r.id),
-    sold: false,
-  }))).filter(r => !r.owned).slice(0, MAX_RELIC_SLOTS);
+export function rerollRelics(state: GameState): ShopRelicItem[] {
+  const rng = mulberry32(state.seed + state.cycle_number * 777 + 1999);
+  return rngShuffle(
+    rng,
+    ALL_RELICS.map(r => ({ ...r, owned: state.relics.includes(r.id), sold: false }))
+  )
+    .filter(r => !r.owned)
+    .slice(0, MAX_SHOP_ITEMS);
 }
 
-// ─── Round start ──────────────────────────────────────────────────────────────
+// ─── Next cycle ───────────────────────────────────────────────────────────────
 
-export function startRound(state: GameState): GameState {
-  const cfg = LEVELS[state.round - 1];
-  const activeEvent = state.activeEventCard;
-
-  // Hot Streak event: meter starts at 50%
-  const initialMeter = activeEvent === 'hot_streak' ? 50 : 0;
-
-  // Determine which consumables need placement (defuser, lens, lucky_charm)
-  const queue = state.consumables.filter(c => PLACEABLE_CONSUMABLES.includes(c));
-
-  const nextPhase = queue.length > 0 ? 'consumable_placement' : 'playing';
-  const grid = generateGrid({
-    ...state,
-    phase: nextPhase,
-    streakMeter: initialMeter,
-    streakGuaranteed: false,
-    bellsThisStreak: 0,
-    consecutiveClears: 0,
-    clearsSinceMagnet: 0,
-    tilesCleared: 0,
-    multiplierLensCount: 0,
-    starsThisAttempt: 0,
-    cherriesRevealed: [],
-    gemsThisRound: state.gemsThisRound, // keep accumulated gems
-    luckyCharmBonus: 0,
-    steadyHandsUsed: false,
-    canCashout: false,
-    score: 0,
-    multiplier: 1.0,
-    bestMultiplier: 0,
-    isBossRound: cfg.isBoss,
-    bustMessage: null,
-  });
-
-  // Remove scatter_reveal from consumables (it's applied in generateGrid)
-  const remainingConsumables = state.consumables.filter(c => c !== 'scatter_reveal');
+export function startNextCycle(state: GameState): GameState {
+  const nextCycle = state.cycle_number + 1;
+  const nextDeadline = calcDeadline(nextCycle);
+  const eventOptions = drawEventCards(state, nextCycle);
 
   return {
     ...state,
-    phase: nextPhase,
-    score: 0,
+    phase: 'EVENT_CARD',
+    cycle_number: nextCycle,
+    deadline: nextDeadline,
+    deposited: 0,
+    attempts_remaining: 3,
+    bomb_suit_used: false,
+    lucky_board_used: false,
+    active_event: null,
+    event_card_options: eventOptions,
+    current_bet: 10,
+    attempt_earnings: 0,
     multiplier: 1.0,
-    bestMultiplier: 0,
-    streakMeter: initialMeter,
-    streakGuaranteed: false,
-    bellsThisStreak: 0,
-    consecutiveClears: 0,
-    clearsSinceMagnet: 0,
-    canCashout: false,
-    multiplierLensCount: 0,
-    starsThisAttempt: 0,
-    cherriesRevealed: [],
-    luckyCharmBonus: 0,
-    tilesCleared: 0,
-    steadyHandsUsed: false,
-    bustMessage: null,
-    grid,
-    gridKey: state.gridKey + 1,
-    isBossRound: cfg.isBoss,
-    placementQueue: queue,
-    placingIndex: queue.length > 0 ? 0 : -1,
-    pendingScannerAxis: null,
-    roundSummary: null,
-    consumables: remainingConsumables,
-    // cumulativeRoundScore is preserved across attempts
+    streak: 0,
+    streak_5_given: false,
+    streak_10_given: false,
+    streak_15_given: false,
+    banana_tile_earnings: [],
+    tiles_cleared: 0,
+    magnet_clears: 0,
+    board: [],
+    bombs_this_attempt: 0,
+    combos_triggered: [],
+    active_combo_display: [],
+    consumables_placed: [],
+    placement_queue: [],
+    placing_index: -1,
+    pending_scanner_axis: null,
   };
+}
+
+// ─── Event card draw ──────────────────────────────────────────────────────────
+
+export function drawEventCards(state: GameState, forCycle?: number): EventCardId[] {
+  const rng = mulberry32(state.seed + (forCycle ?? state.cycle_number) * 333);
+  const pool = EVENT_CARDS.map(c => c.id);
+  return rngShuffle(rng, pool).slice(0, 3) as EventCardId[];
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
 export function createInitialState(): GameState {
   return {
-    phase: 'start',
-    seed: newSeed(),
-    cash: STARTING_CASH,
-    gems: 0,
-    relics: [],
-    consumables: [],
-    round: 1,
-    roundsCleared: 0,
-    bossRoundsCleared: 0,
-    totalTilesCleared: 0,
-    bestMultiplier: 0,
-    totalCashEarned: 0,
-    runTokens: 0,
-    safetyNetUsed: false,
-    cumulativeRoundScore: 0,
-    roundAttempts: 0,
-    bustMessage: null,
-    bet: 20,
-    score: 0,
+    phase: 'START',
+    wallet: STARTING_WALLET,
+    tickets: 0,
+    cycle_number: 1,
+    deadline: calcDeadline(1),
+    deposited: 0,
+    attempts_remaining: 3,
+    bomb_suit_used: false,
+    current_bet: 10,
+    attempt_earnings: 0,
     multiplier: 1.0,
-    streakMeter: 0,
-    streakGuaranteed: false,
-    bellsThisStreak: 0,
-    consecutiveClears: 0,
-    clearsSinceMagnet: 0,
-    canCashout: false,
-    multiplierLensCount: 0,
-    starsThisAttempt: 0,
-    cherriesRevealed: [],
-    gemsThisRound: 0,
-    luckyCharmBonus: 0,
-    tilesCleared: 0,
-    steadyHandsUsed: false,
-    eventCardOptions: [],
-    activeEventCard: null,
-    lastEventCard: null,
-    grid: [],
-    gridKey: 0,
-    isBossRound: false,
-    placementQueue: [],
-    placingIndex: -1,
-    pendingScannerAxis: null,
-    shopConsumables: [],
-    shopRelics: [],
-    shopRerollUsed: false,
-    relicRerollUsed: false,
-    bossRewardOptions: [],
-    roundSummary: null,
+    streak: 0,
+    streak_5_given: false,
+    streak_10_given: false,
+    streak_15_given: false,
+    banana_tile_earnings: [],
+    tiles_cleared: 0,
+    magnet_clears: 0,
+    board: [],
+    bombs_this_attempt: 0,
+    lucky_board_used: false,
+    combos_triggered: [],
+    active_combo_display: [],
+    combo_id_counter: 1,
+    active_event: null,
+    event_card_options: [],
+    relics: [],
+    consumables_owned: [],
+    consumables_placed: [],
+    placement_queue: [],
+    placing_index: -1,
+    pending_scanner_axis: null,
+    shop_consumables: [],
+    shop_relics: [],
+    shop_consumables_rerolled: false,
+    shop_relics_rerolled: false,
+    cycles_survived: 0,
+    total_earned: 0,
+    highest_multiplier: 1.0,
+    best_streak: 0,
+    seed: newSeed(),
   };
 }
 
-// ─── Event card draw ──────────────────────────────────────────────────────────
-
-export function drawEventCards(state: GameState): EventCardId[] {
-  const pool = EVENT_CARDS.map(c => c.id).filter(id => id !== state.lastEventCard);
-  const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, 3);
-}
-
-// ─── Run token calculation ────────────────────────────────────────────────────
-
-export function calcRunTokens(roundsCleared: number, bossRoundsCleared: number): number {
-  return roundsCleared * 5 + bossRoundsCleared * 15;
-}
-
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// ─── Utility ──────────────────────────────────────────────────────────────────
 
 export function removeOne<T>(arr: T[], val: T): T[] {
   const i = arr.indexOf(val);

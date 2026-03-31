@@ -1,20 +1,16 @@
 // ─── Tile ─────────────────────────────────────────────────────────────────────
 
 export type SymbolId = 'diamond' | 'cherry' | 'banana' | 'star' | 'bell' | 'coin';
-
-export type TileState =
-  | 'hidden'    // face down, nothing known
-  | 'hinted'    // safe, revealed by a tool — still clickable for points
-  | 'revealed'  // player clicked it (or bomb exploded)
-  | 'defused';  // bomb tile neutralised by Defuser consumable
+export type TileType = 'symbol' | 'empty' | 'bomb';
+export type TileState = 'hidden' | 'hinted' | 'revealed' | 'bomb_hit' | 'empty_revealed';
 
 export interface Tile {
-  id: number;
-  isBomb: boolean;
-  symbol: SymbolId | null; // null for bombs; pre-assigned at grid generation
+  index: number;
   state: TileState;
-  isDefused: boolean;
-  placedConsumable: ConsumableId | null; // consumable pre-placed in placement phase
+  type: TileType;
+  symbol: SymbolId | null;
+  consumable: ConsumableId | null;
+  combo_highlight: boolean;
 }
 
 // ─── Items ────────────────────────────────────────────────────────────────────
@@ -22,46 +18,55 @@ export interface Tile {
 export type RelicId =
   | 'greed_chip'
   | 'adrenaline_core'
-  | 'safety_net'
-  | 'double_down'
-  | 'dead_mans_hand'
-  | 'cartographer'
-  | 'chain_reaction'
-  | 'gem_cutter'
-  | 'bell_choir'
-  | 'star_collector'
-  | 'lucky_streak'
-  | 'banana_republic';
+  | 'cherry_picker'
+  | 'banana_baron'
+  | 'star_magnet'
+  | 'bell_captain'
+  | 'diamond_dealer'
+  | 'coin_tycoon'
+  | 'safe_digger'
+  | 'bomb_suit'
+  | 'hot_hands'
+  | 'lucky_charm';
 
 export type ConsumableId =
   | 'scatter_reveal'
   | 'scanner'
   | 'defuser'
-  | 'multiplier_lens'
-  | 'lucky_charm'
-  | 'magnet'
-  | 'reroll_shop';
+  | 'tile_magnet'
+  | 'lucky_tile'
+  | 'empty_eraser';
 
 export type EventCardId =
   | 'hot_streak'
-  | 'danger_pay'
   | 'cherry_season'
   | 'banana_bonanza'
   | 'star_shower'
-  | 'bell_ringer'
-  | 'safe_zone'
-  | 'greed_mode'
   | 'coin_rush'
-  | 'steady_hands'
-  | 'lucky_scout'
-  | 'high_roller';
+  | 'safe_zone'
+  | 'danger_pay'
+  | 'bell_ringer'
+  | 'lucky_board'
+  | 'greed_mode';
+
+// ─── Game phases ──────────────────────────────────────────────────────────────
+
+export type GamePhase =
+  | 'START'
+  | 'EVENT_CARD'
+  | 'BET'
+  | 'PLACEMENT'
+  | 'CLEARING'
+  | 'BUST_FLASH'
+  | 'SHOP'
+  | 'GAME_OVER';
 
 // ─── Shop items ───────────────────────────────────────────────────────────────
 
 export interface ShopConsumableItem {
   id: ConsumableId;
   name: string;
-  price: number; // cash
+  price: number;
   description: string;
   emoji: string;
   sold: boolean;
@@ -70,124 +75,80 @@ export interface ShopConsumableItem {
 export interface ShopRelicItem {
   id: RelicId;
   name: string;
-  cost: number; // gems
+  cost: number;
   description: string;
   emoji: string;
   sold: boolean;
   owned: boolean;
 }
 
-// ─── Round summary ────────────────────────────────────────────────────────────
+// ─── Combo display notification ───────────────────────────────────────────────
 
-export interface RoundSummaryData {
-  won: boolean;            // cashed out = true
-  round: number;
-  isBoss: boolean;
-  score: number;           // final attempt score at cashout
-  cumulativeScore: number; // total across all attempts this round
-  bet: number;
-  payout: number;
-  cashoutMult: number;
-  gemsEarned: number;
-  tilesCleared: number;
-  totalSafeTiles: number;
-  multiplierReached: number;
-  starBonus: number;
-  cherryCombo: boolean;
-  luckyCharmBonus: number;
-  attempts: number;        // how many busts before cashing out
+export interface ComboDisplay {
+  text: string;
+  amount: string;
+  color: string;
+  id: number;
 }
-
-// ─── Game phases ──────────────────────────────────────────────────────────────
-
-export type GamePhase =
-  | 'start'
-  | 'event_card'
-  | 'bet'
-  | 'consumable_placement'
-  | 'playing'
-  | 'round_summary'
-  | 'shop'
-  | 'boss_reward'
-  | 'gameover'
-  | 'win';
 
 // ─── Full game state ──────────────────────────────────────────────────────────
 
 export interface GameState {
-  // Meta
   phase: GamePhase;
-  seed: number;
 
-  // Run-persistent resources
-  cash: number;
-  gems: number;
-  relics: RelicId[];
-  consumables: ConsumableId[]; // owned, not yet placed/used
+  // Economy
+  wallet: number;
+  tickets: number;
 
-  // Run tracking (for end screen & run tokens)
-  round: number;        // 1-6
-  roundsCleared: number;
-  bossRoundsCleared: number;
-  totalTilesCleared: number;
-  bestMultiplier: number;
-  totalCashEarned: number;
-  runTokens: number;
-
-  // Run-scoped flags
-  safetyNetUsed: boolean; // Safety Net relic — protects one bust per run
-
-  // Round-level: persists across attempts within a round
-  cumulativeRoundScore: number;  // sum of scores from all busted attempts
-  roundAttempts: number;         // bust count this round
-  bustMessage: string | null;    // shown on bet phase after bust
+  // Cycle
+  cycle_number: number;
+  deadline: number;
+  deposited: number;
+  attempts_remaining: number;
+  bomb_suit_used: boolean;       // resets each cycle
 
   // Current attempt
-  bet: number;
-  score: number;            // score for current attempt only
+  current_bet: number;
+  attempt_earnings: number;
   multiplier: number;
-  streakMeter: number;         // 0–100
-  streakGuaranteed: boolean;   // next click is guaranteed safe + 3×
-  bellsThisStreak: number;     // for Bell Choir relic
-  consecutiveClears: number;   // for Chain Reaction relic + streak display
-  clearsSinceMagnet: number;   // for Magnet consumable
-  canCashout: boolean;
-  multiplierLensCount: number;
+  streak: number;
+  streak_5_given: boolean;
+  streak_10_given: boolean;
+  streak_15_given: boolean;
+  banana_tile_earnings: number[]; // for Banana Split retroactive ×2
+  tiles_cleared: number;
+  magnet_clears: number;          // clears since last tile_magnet trigger
 
-  // Attempt symbol tracking
-  starsThisAttempt: number;
-  cherriesRevealed: number[];  // tile indices (for cherry combo)
-  gemsThisRound: number;       // accumulated across all attempts this round
-  tilesCleared: number;        // current attempt tiles
-  luckyCharmBonus: number;     // flat $ accumulator from Lucky Charm
-  steadyHandsUsed: boolean;    // Steady Hands event card (once per round)
+  // Board
+  board: Tile[];
+  bombs_this_attempt: number;
+  lucky_board_used: boolean;      // Lucky Board event: first attempt no empties
 
-  // Event cards
-  eventCardOptions: EventCardId[];
-  activeEventCard: EventCardId | null;
-  lastEventCard: EventCardId | null;
+  // Combos
+  combos_triggered: string[];
+  active_combo_display: ComboDisplay[];
+  combo_id_counter: number;
 
-  // Grid
-  grid: Tile[];
-  gridKey: number;
-  isBossRound: boolean;
-
-  // Consumable placement phase
-  placementQueue: ConsumableId[];
-  placingIndex: number;
-
-  // Scanner
-  pendingScannerAxis: 'row' | 'col' | null;
+  // Modifiers
+  active_event: EventCardId | null;
+  event_card_options: EventCardId[];
+  relics: RelicId[];
+  consumables_owned: ConsumableId[];
+  consumables_placed: { tile_index: number; type: ConsumableId }[];
+  placement_queue: ConsumableId[];
+  placing_index: number;
+  pending_scanner_axis: 'row' | 'col' | null;
 
   // Shop
-  shopConsumables: ShopConsumableItem[];
-  shopRelics: ShopRelicItem[];
-  shopRerollUsed: boolean;
-  relicRerollUsed: boolean;
+  shop_consumables: ShopConsumableItem[];
+  shop_relics: ShopRelicItem[];
+  shop_consumables_rerolled: boolean;
+  shop_relics_rerolled: boolean;
 
-  // Boss reward
-  bossRewardOptions: RelicId[];
-
-  // Round summary
-  roundSummary: RoundSummaryData | null;
+  // Run stats
+  cycles_survived: number;
+  total_earned: number;
+  highest_multiplier: number;
+  best_streak: number;
+  seed: number;
 }

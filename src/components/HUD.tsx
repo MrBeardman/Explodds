@@ -1,4 +1,4 @@
-import { LEVELS, RELIC_MAP } from '../constants';
+import { RELIC_MAP } from '../constants';
 import type { GameState } from '../types';
 
 interface Props {
@@ -6,79 +6,83 @@ interface Props {
 }
 
 export function HUD({ state }: Props) {
-  const cfg = LEVELS[state.round - 1];
-  const targetScore = Math.round(cfg.target * (state.activeEventCard === 'high_roller' ? 1.5 : 1));
-  const cumulativeScore = state.cumulativeRoundScore + state.score;
+  const owed = Math.max(0, state.deadline - state.deposited);
+  const attemptsTotal = 3;
+  const attemptsLeft = state.attempts_remaining;
 
   return (
     <>
-      {/* Cash */}
+      {/* Cycle */}
       <div className="flex flex-col gap-0.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>CASH</div>
-        <div className="font-display text-3xl" style={{ color: 'var(--gold)' }}>${state.cash}</div>
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>CYCLE</div>
+        <div className="font-display text-2xl" style={{ color: 'var(--text-primary)' }}>
+          {state.cycle_number}
+        </div>
       </div>
 
       <div className="gold-line" />
 
-      {/* Round / Target / Score */}
+      {/* Deadline / deposited / owed */}
       <div className="flex flex-col gap-1.5">
-        <StatRow label="ROUND" value={`${state.round} / 6${cfg.isBoss ? ' 👑' : ''}`}
-                 valueColor={cfg.isBoss ? 'var(--gold)' : 'var(--text-primary)'} />
-        <StatRow label="TARGET" value={targetScore.toLocaleString()} />
-        <StatRow
-          label="SCORE"
-          value={cumulativeScore.toLocaleString()}
-          valueColor={state.canCashout ? 'var(--green)' : 'var(--text-primary)'}
-          large
-        />
-        {state.roundAttempts > 0 && (
-          <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
-            {state.roundAttempts} bust{state.roundAttempts > 1 ? 's' : ''} this round
-          </div>
-        )}
+        <StatRow label="DEADLINE"  value={`$${state.deadline}`} />
+        <StatRow label="DEPOSITED" value={`$${Math.floor(state.deposited)}`} valueColor="var(--green)" />
+        <StatRow label="OWED"      value={`$${Math.ceil(owed)}`} valueColor={owed > 0 ? 'var(--red)' : 'var(--green)'} />
       </div>
 
       <div className="gold-line" />
 
       {/* Multiplier */}
       <div className="flex flex-col gap-0.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MULTIPLIER</div>
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MULT</div>
         <div className="font-display text-3xl" style={{ color: '#f97316' }}>
           ×{state.multiplier.toFixed(1)}
         </div>
-        {state.streakGuaranteed && (
-          <div className="font-mono text-xs streak-full" style={{ color: 'var(--gold)' }}>
-            ✦ NEXT TILE SAFE ×3
-          </div>
-        )}
       </div>
 
-      <div className="gold-line" />
-
-      {/* Streak counter */}
+      {/* Streak */}
       <div className="flex flex-col gap-0.5">
         <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>🔥 STREAK</div>
-        <div className="font-display text-2xl" style={{ color: state.consecutiveClears >= 5 ? '#f97316' : 'var(--text-primary)' }}>
-          {state.consecutiveClears}
+        <div
+          className="font-display text-2xl"
+          style={{ color: state.streak >= 10 ? '#f97316' : state.streak >= 5 ? 'var(--gold)' : 'var(--text-primary)' }}
+        >
+          {state.streak}
         </div>
       </div>
 
       <div className="gold-line" />
 
-      {/* Gems */}
-      <StatRow label="💎 GEMS" value={`${state.gems}`} valueColor="#60c0ff" />
+      {/* Attempts remaining — dots */}
+      <div className="flex flex-col gap-1.5">
+        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>ATTEMPTS</div>
+        <div className="flex gap-2">
+          {Array.from({ length: attemptsTotal }).map((_, i) => (
+            <div
+              key={i}
+              className="w-4 h-4 rounded-full"
+              style={{
+                background: i < attemptsLeft ? 'var(--green)' : 'var(--bg-raised)',
+                border: `2px solid ${i < attemptsLeft ? 'var(--green-bright)' : 'var(--border)'}`,
+              }}
+            />
+          ))}
+        </div>
+        <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
+          {attemptsLeft}/3 left
+        </div>
+      </div>
 
-      {/* Active relics */}
+      {/* Relics */}
       {state.relics.length > 0 && (
         <>
           <div className="gold-line" />
           <div className="flex flex-col gap-1">
             <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>RELICS</div>
             <div className="flex flex-wrap gap-1">
-              {state.relics.map(r => {
+              {state.relics.map((r, i) => {
                 const def = RELIC_MAP[r];
                 return (
-                  <span key={r} title={def.description}
+                  <span key={i} title={`${def.name}: ${def.description}`}
                     className="text-lg cursor-default" style={{ lineHeight: 1 }}>
                     {def.emoji}
                   </span>
@@ -88,20 +92,26 @@ export function HUD({ state }: Props) {
           </div>
         </>
       )}
+
+      {/* Active event */}
+      {state.active_event && (
+        <>
+          <div className="gold-line" />
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>EVENT</div>
+          <div className="font-mono text-xs" style={{ color: 'var(--gold)' }}>
+            {state.active_event.replace(/_/g, ' ').toUpperCase()}
+          </div>
+        </>
+      )}
     </>
   );
 }
 
-function StatRow({ label, value, valueColor, large }: {
-  label: string; value: string; valueColor?: string; large?: boolean;
-}) {
+function StatRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <div className="flex justify-between items-baseline gap-1">
       <span className="font-mono text-xs shrink-0" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>{label}</span>
-      <span className={`font-mono font-bold ${large ? 'text-base' : 'text-xs'}`}
-            style={{ color: valueColor ?? 'var(--text-primary)' }}>
-        {value}
-      </span>
+      <span className="font-mono font-bold text-xs" style={{ color: valueColor ?? 'var(--text-primary)' }}>{value}</span>
     </div>
   );
 }

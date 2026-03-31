@@ -1,5 +1,3 @@
-import { LEVELS } from '../constants';
-
 interface Props { onStart: () => void; }
 
 export function StartScreen({ onStart }: Props) {
@@ -17,55 +15,76 @@ export function StartScreen({ onStart }: Props) {
 
       <div className="gold-line w-64" />
 
-      {/* Round preview */}
-      <div className="w-full max-w-sm">
-        <div className="font-mono text-xs text-center mb-3" style={{ color: 'var(--text-muted)', letterSpacing: '0.2em' }}>
-          6 ROUNDS · PLACE BETS · CLEAR TILES
+      {/* How to play */}
+      <div className="w-full max-w-sm flex flex-col gap-3">
+        <div className="font-mono text-xs text-center" style={{ color: 'var(--text-muted)', letterSpacing: '0.2em' }}>
+          HOW IT WORKS
         </div>
-        <div className="casino-panel p-1 overflow-hidden rounded-xl">
-          {LEVELS.map(l => (
-            <div
-              key={l.round}
-              className="flex items-center justify-between px-3 py-2 text-sm"
-              style={{ borderBottom: l.round < 6 ? '1px solid var(--border)' : undefined }}
-            >
-              <span className="font-mono" style={{ color: l.isBoss ? 'var(--gold)' : 'var(--text-muted)' }}>
-                {l.isBoss ? '👑' : '  '} RD {l.round}
-              </span>
-              <span style={{ color: 'var(--text-primary)' }}>{l.target.toLocaleString()} pts</span>
-              <span style={{ color: 'var(--red)' }}>💣 ×{l.bombs}</span>
-              <span className="font-mono" style={{ color: l.isBoss ? 'var(--gold)' : 'var(--text-muted)' }}>
-                {l.isBoss ? 'BOSS' : ''}
-              </span>
+        <div className="casino-panel p-4 flex flex-col gap-2.5 rounded-xl">
+          {[
+            ['💣', 'Mines field with 5×5 grid'],
+            ['💵', 'Bet before each board — bet lost on bust'],
+            ['🎯', 'Earn cash per tile cleared'],
+            ['💳', 'Pay off your cycle DEADLINE to advance'],
+            ['3×', '3 attempts per cycle (bust = attempt used)'],
+            ['🎫', 'Earn tickets → spend on relics in shop'],
+          ].map(([icon, text]) => (
+            <div key={text} className="flex items-center gap-2 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>
+              <span className="text-base w-5">{icon}</span>
+              <span>{text}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Deadlines preview */}
+      <div className="w-full max-w-sm">
+        <div className="font-mono text-xs text-center mb-2" style={{ color: 'var(--text-muted)', letterSpacing: '0.2em' }}>
+          CYCLE DEADLINES
+        </div>
+        <div className="flex justify-center gap-2 font-mono text-xs">
+          {[
+            { cycle: 1, debt: 100 },
+            { cycle: 2, debt: 180 },
+            { cycle: 3, debt: 290 },
+            { cycle: 4, debt: 430 },
+            { cycle: 5, debt: 600 },
+          ].map(({ cycle, debt }) => (
+            <div
+              key={cycle}
+              className="flex flex-col items-center p-2 rounded-lg"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+            >
+              <div style={{ color: 'var(--text-muted)' }}>C{cycle}</div>
+              <div style={{ color: 'var(--red)' }}>${debt}</div>
+            </div>
+          ))}
+          <div
+            className="flex flex-col items-center p-2 rounded-lg"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+          >
+            <div style={{ color: 'var(--text-muted)' }}>6+</div>
+            <div style={{ color: 'var(--red)' }}>×1.35</div>
+          </div>
         </div>
       </div>
 
       {/* Stats row */}
       <div className="flex gap-6 text-sm font-mono" style={{ color: 'var(--text-muted)' }}>
         <span>💵 Start $150</span>
-        <span>❤️ 3 lives</span>
-        <span>💎 Earn gems</span>
+        <span>🎯 3 attempts</span>
+        <span>🎫 Earn tickets</span>
       </div>
 
       <button
         onClick={onStart}
         className="font-display text-2xl px-12 py-4 rounded-xl transition-all duration-200 cursor-pointer glow-green"
-        style={{
-          background: 'var(--green)',
-          color: '#000',
-          letterSpacing: '0.1em',
-        }}
+        style={{ background: 'var(--green)', color: '#000', letterSpacing: '0.1em' }}
         onMouseEnter={e => (e.currentTarget.style.background = 'var(--green-bright)')}
         onMouseLeave={e => (e.currentTarget.style.background = 'var(--green)')}
       >
         NEW RUN
       </button>
-
-      <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
-        // TODO: sound
-      </div>
     </div>
   );
 }
