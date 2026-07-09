@@ -61,6 +61,10 @@ export const TICKETS_SUCCESSFUL_CASHOUT = 2;  // cashed out, didn't bust
 export const TICKETS_PROFITABLE = 3;          // earnings > bet × 1.5
 export const TICKETS_PAY_IN_FULL = 5;         // deadline fully deposited
 
+// ─── Bomb Sense skill ──────────────────────────────────────────────────────────
+
+export const BOMB_FLAG_BONUS = 8; // cash per correctly-flagged bomb, paid when the attempt ends (cashout or bust)
+
 // ─── Packs & symbol boosts ─────────────────────────────────────────────────────
 
 export const PACK_BASE_PRICE = 18;

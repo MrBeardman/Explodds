@@ -5,6 +5,7 @@ import {
   MIN_BET_BASE, MIN_BET_PER_CYCLE, GREED_MODE_MIN_BET,
   BASE_INTEREST_RATE, COMPOUND_CHIP_BONUS_RATE, INFLATOR_INTEREST_MULT,
   TICKETS_COMPLETE_ATTEMPT, TICKETS_SUCCESSFUL_CASHOUT, TICKETS_PROFITABLE, TICKETS_PAY_IN_FULL,
+  BOMB_FLAG_BONUS,
   PACK_BASE_PRICE, PACK_PRICE_STEP, BOOST_FREQUENCY_MULT, BOOST_PAYOUT_MULT,
   THEMED_PACK_PRICE_MULT, PACK_SLOT_COUNT, PACK_KIND_WEIGHTS, PACK_CHOICE_COUNT,
   HUGE_PACK_CHOICE_COUNT, HUGE_PACK_CHANCE, HUGE_PACK_PRICE_MULT,
@@ -528,6 +529,9 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
 export function handleTileClick(state: GameState, tileIndex: number): GameState {
   if (state.phase !== 'CLEARING') return state;
 
+  // Bomb Sense flag mode — clicking a tile marks/unmarks a guess instead of revealing it
+  if (state.flag_mode) return toggleFlag(state, tileIndex);
+
   const tile = state.board[tileIndex];
   if (tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return state;
 
@@ -581,6 +585,11 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     newBoard[tileIndex].state = 'bomb_hit';
     const newAttempts = state.attempts_remaining - 1;
 
+    // Bomb Sense: correctly-flagged bombs pay out even on a bust — the skill
+    // rewards the deduction itself, not just surviving the attempt.
+    const flagResult = calcFlagBonus(state);
+    newWallet = parseFloat((newWallet + flagResult.bonus).toFixed(2));
+
     return {
       ...state,
       board: newBoard,
@@ -602,6 +611,8 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       magnet_clears: 0,
       combos_triggered: [],
       active_combo_display: [],
+      player_flags: [],
+      flag_mode: false,
     };
   }
 
@@ -748,6 +759,36 @@ export function getSymbolOdds(state: GameState): SymbolOddsRow[] {
   }).sort((a, b) => b.payout - a.payout);
 }
 
+// ─── Bomb Sense (flag-a-suspected-bomb meta-skill) ────────────────────────────
+
+// How many tiles the player can flag this attempt — the skill level (0-5)
+// capped by however many bombs are actually on the current board, since
+// flagging more than that can ever exist would be meaningless.
+export function maxPlayerFlags(state: GameState): number {
+  return Math.min(state.skills.bomb_flag ?? 0, state.bombs_this_attempt);
+}
+
+// Toggles a flag on a still-hidden tile (does not reveal it). Unflagging is
+// always allowed; flagging a new tile is blocked once maxPlayerFlags is hit.
+export function toggleFlag(state: GameState, tileIndex: number): GameState {
+  const tile = state.board[tileIndex];
+  if (!tile || tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return state;
+
+  if (state.player_flags.includes(tileIndex)) {
+    return { ...state, player_flags: state.player_flags.filter(i => i !== tileIndex) };
+  }
+  if (state.player_flags.length >= maxPlayerFlags(state)) return state;
+  return { ...state, player_flags: [...state.player_flags, tileIndex] };
+}
+
+// Correct flags (tile actually a bomb) pay a flat bonus, checked when the
+// attempt ends — cashout AND bust, since the skill rewards the deduction
+// itself rather than just surviving.
+export function calcFlagBonus(state: GameState): { correct: number; bonus: number } {
+  const correct = state.player_flags.filter(i => state.board[i]?.type === 'bomb').length;
+  return { correct, bonus: parseFloat((correct * BOMB_FLAG_BONUS).toFixed(2)) };
+}
+
 // ─── Scanner ──────────────────────────────────────────────────────────────────
 
 function applyScanner(state: GameState, tileIndex: number): GameState {
@@ -839,8 +880,14 @@ export function handleCashout(state: GameState): GameState {
   const interestEarned = parseFloat((state.deposited * interestRate(state)).toFixed(2));
   if (interestEarned > 0) cashLines.push({ label: 'Interest', amount: interestEarned });
 
-  const newWallet = parseFloat((state.wallet + earnings + interestEarned).toFixed(2));
-  const newTotalEarned = parseFloat((state.total_earned + earnings + interestEarned).toFixed(2));
+  // Bomb Sense: correctly-flagged bombs pay a flat bonus each
+  const flagResult = calcFlagBonus(state);
+  if (flagResult.correct > 0) {
+    cashLines.push({ label: `🚩 Bomb flags (${flagResult.correct} correct)`, amount: flagResult.bonus });
+  }
+
+  const newWallet = parseFloat((state.wallet + earnings + interestEarned + flagResult.bonus).toFixed(2));
+  const newTotalEarned = parseFloat((state.total_earned + earnings + interestEarned + flagResult.bonus).toFixed(2));
   const newInterestEarned = parseFloat((state.interest_earned_this_cycle + interestEarned).toFixed(2));
 
   // Ticket awards: complete + successful cashout + profitable clear + relic bonus
@@ -879,6 +926,8 @@ export function handleCashout(state: GameState): GameState {
     magnet_clears: 0,
     combos_triggered: [],
     active_combo_display: [],
+    player_flags: [],
+    flag_mode: false,
     consumables_placed: [],
     pending_scanner_axis: null,
     board: [],
@@ -1022,6 +1071,8 @@ export function handlePlaceBet(state: GameState): GameState {
     magnet_clears: 0,
     combos_triggered: [],
     active_combo_display: [],
+    player_flags: [],
+    flag_mode: false,
     consumables_placed: [],
     pending_scanner_axis: null,
     lucky_board_used: state.active_events.includes('lucky_board') ? true : state.lucky_board_used,
@@ -1142,6 +1193,8 @@ export function startNextCycle(state: GameState): GameState {
     bombs_this_attempt: 0,
     combos_triggered: [],
     active_combo_display: [],
+    player_flags: [],
+    flag_mode: false,
     consumables_placed: [],
     placement_queue: [],
     placing_index: -1,
@@ -1190,6 +1243,8 @@ export function createInitialState(): GameState {
     lucky_board_used: false,
     combos_triggered: [],
     active_combo_display: [],
+    player_flags: [],
+    flag_mode: false,
     combo_id_counter: 1,
     active_events: [],
     active_boss: null,

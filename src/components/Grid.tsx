@@ -20,12 +20,16 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
     const tile = board[index];
     if (!tile || tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return;
     if (phase !== 'CLEARING') return;
+    // Flagging a tile doesn't reveal it — skip the reveal-pop animation
+    if (state.flag_mode) { onTileClick(index); return; }
     setAnimating(prev => new Set(prev).add(index));
     onTileClick(index);
     setTimeout(() => setAnimating(prev => { const n = new Set(prev); n.delete(index); return n; }), 520);
-  }, [board, onTileClick, phase]);
+  }, [board, onTileClick, phase, state.flag_mode]);
 
   const scannerActive = state.pending_scanner_axis !== null;
+  const flagModeActive = state.flag_mode;
+  const playerFlags = state.player_flags;
   const isBustFlash = phase === 'BUST_FLASH';
   const blackout = state.active_boss === 'blackout';
   const sixthSense = state.relics.includes('sixth_sense');
@@ -65,6 +69,8 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
               ghostAdjacentBombs={debugReveal ? adjacentBombCount(board, tile.index) : 0}
               isAnimating={animating.has(tile.index)}
               scannerActive={scannerActive}
+              flagModeActive={flagModeActive}
+              playerFlagged={playerFlags.includes(tile.index)}
               clearing={phase === 'CLEARING'}
               onClick={handleClick}
               debugReveal={debugReveal}
@@ -117,13 +123,15 @@ interface TileProps {
   ghostAdjacentBombs: number;
   isAnimating: boolean;
   scannerActive: boolean;
+  flagModeActive: boolean;
+  playerFlagged: boolean;
   clearing: boolean;
   onClick: (i: number) => void;
   debugReveal: boolean;
   revealAll?: boolean;
 }
 
-function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
+function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, flagModeActive, playerFlagged, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
   const isHidden    = tile.state === 'hidden';
   const isHinted    = tile.state === 'hinted';
   const isFlagged   = tile.state === 'flagged';
@@ -169,6 +177,8 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
     bg = 'rgba(255,217,61,0.1)';
   } else if (scannerActive && isClickable) {
     borderColor = 'rgba(59,130,246,0.4)';
+  } else if (flagModeActive && isClickable) {
+    borderColor = 'rgba(250,204,21,0.4)';
   }
 
   const consumableDef = tile.consumable
@@ -183,7 +193,7 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
         animationDelay: entranceDelay,
         background: bg,
         borderColor,
-        cursor: isClickable ? (scannerActive ? 'crosshair' : 'pointer') : 'default',
+        cursor: isClickable ? (scannerActive ? 'crosshair' : flagModeActive ? 'cell' : 'pointer') : 'default',
       }}
       className={[
         'aspect-square rounded-xl border-2 flex items-center justify-center relative',
@@ -196,6 +206,14 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
       ].filter(Boolean).join(' ')}
     >
       <TileContent tile={tile} adjacentBombs={adjacentBombs} isAnimating={isAnimating} consumableDef={consumableDef ?? null} isGhostReveal={isGhostReveal} />
+      {playerFlagged && (isHidden || isHinted || isFlagged) && (
+        <span
+          className="absolute top-0.5 left-1 text-xs leading-none"
+          style={{ filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.9))' }}
+        >
+          🚩
+        </span>
+      )}
       {debugReveal && !revealAll && (tile.state === 'hidden' || tile.state === 'hinted' || tile.state === 'flagged') && (
         <DebugGhost tile={tile} adjacentBombs={ghostAdjacentBombs} />
       )}

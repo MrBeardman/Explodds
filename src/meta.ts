@@ -36,6 +36,19 @@ export const SKILLS: SkillDef[] = [
       { level: 2, name: 'Mastered',  description: 'A 0-adjacency empty tile cascades open every connected safe tile.', cost: 8 },
     ],
   },
+  {
+    id: 'bomb_flag',
+    name: 'Bomb Sense',
+    emoji: '🚩',
+    levels: [
+      { level: 0, name: 'Untrained',  description: 'Cannot flag suspected bombs.', cost: 0 },
+      { level: 1, name: 'Hunch',      description: 'Flag 1 tile per attempt as a suspected bomb — correct flags pay a bonus when the attempt ends.', cost: 3 },
+      { level: 2, name: 'Suspicion',  description: 'Flag up to 2 tiles per attempt.', cost: 4 },
+      { level: 3, name: 'Instinct',   description: 'Flag up to 3 tiles per attempt.', cost: 5 },
+      { level: 4, name: 'Certainty',  description: 'Flag up to 4 tiles per attempt.', cost: 6 },
+      { level: 5, name: 'Bomb Sense', description: 'Flag up to 5 tiles per attempt (capped by how many bombs are actually on the board).', cost: 8 },
+    ],
+  },
 ];
 
 export const SKILL_MAP: Record<SkillId, SkillDef> = Object.fromEntries(
@@ -56,7 +69,7 @@ export interface MetaProgress {
 const STORAGE_KEY = 'explodds_meta';
 
 function defaultMeta(): MetaProgress {
-  return { prestige_points: 0, skills: { cascade: 0 } };
+  return { prestige_points: 0, skills: { cascade: 0, bomb_flag: 0 } };
 }
 
 export function loadMeta(): MetaProgress {

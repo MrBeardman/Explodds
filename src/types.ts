@@ -78,7 +78,7 @@ export type EventCardId =
 
 // ─── Meta-progression (persists across runs — see src/meta.ts) ───────────────
 
-export type SkillId = 'cascade';
+export type SkillId = 'cascade' | 'bomb_flag';
 
 // ─── Symbol boosts (packs) ────────────────────────────────────────────────────
 
@@ -203,6 +203,8 @@ export interface GameState {
   banana_tile_earnings: number[]; // for Banana Split retroactive ×2
   tiles_cleared: number;
   magnet_clears: number;          // clears since last tile_magnet trigger
+  player_flags: number[];         // Bomb Sense skill: tile indices guessed as bombs this attempt
+  flag_mode: boolean;             // toggled via FLAG button — next tile click flags instead of reveals
 
   // Board
   board: Tile[];

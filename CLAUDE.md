@@ -318,10 +318,34 @@ the minesweeper flood-fill (`floodFillReveal` in gameLogic.ts) can chain:
 - **Level 2 (mastered)** — `floodFillReveal(board, tileIndex)` with no cap
   (`Infinity`), today's original unlimited cascade.
 
-**Adding skill #2+**: append to `SKILLS` in meta.ts (id, name, emoji, per-level
+**Second skill: Bomb Sense** (`SkillId = 'bomb_flag'`, 5 levels) lets the player
+flag suspected bomb tiles during CLEARING for a bonus when the attempt ends:
+- **Level 0 (new-player default)** — cannot flag at all (`maxPlayerFlags` returns 0,
+  the FLAG BOMB button in the left panel doesn't render).
+- **Levels 1-5** — flag up to N tiles per attempt, via `maxPlayerFlags(state) =
+  min(state.skills.bomb_flag, state.bombs_this_attempt)` (gameLogic.ts) — the skill
+  level is naturally capped by however many bombs actually exist on the current
+  board, so a low-bomb early cycle can't be fully flagged even at level 5.
+- Toggling **FLAG BOMB** sets `state.flag_mode = true` (mutually exclusive with
+  scanner mode — activating either cancels the other); while active, `TILE_CLICK`
+  routes to `toggleFlag(state, index)` instead of `handleTileClick`'s normal
+  reveal logic, adding/removing that index from `state.player_flags` (does NOT
+  touch `Tile.state` — this is a separate array, not the same `'flagged'`
+  `TileState` that Bomb Detector uses to mark a *known* bomb still-clickable).
+  Toggling off an existing flag is always allowed; adding a new one is blocked once
+  `player_flags.length` hits the cap.
+- `calcFlagBonus(state)` checks each flagged index against `state.board[i].type
+  === 'bomb'` and pays `BOMB_FLAG_BONUS` (constants.ts) per correct guess — called
+  from BOTH `handleCashout` (itemized as a cash line, `"🚩 Bomb flags (N correct)"`)
+  and `handleTileClick`'s bomb-hit/bust branch (added to wallet silently, same
+  as Bomb Suit/Insurance refunds — bust has no itemized breakdown). Wrong flags
+  have no penalty. `player_flags`/`flag_mode` reset to `[]`/`false` everywhere an
+  attempt ends (handleCashout, the bust branch, handlePlaceBet, startNextCycle).
+
+**Adding skill #3+**: append to `SKILLS` in meta.ts (id, name, emoji, per-level
 name/description/cost), add the id to the `SkillId` union in types.ts, add it to
 `defaultMeta().skills` in meta.ts, then hook `state.skills[id]` into whichever
-gameLogic function the skill should affect — same shape as skill #1.
+gameLogic function the skill should affect — same shape as skills #1/#2.
 
 **Debug**: DebugPanel's SKILLS section directly patches `state.skills` for
 testing THIS run only — it does not touch `localStorage`/prestige at all. Real
@@ -401,6 +425,10 @@ Bomb Suit (full bet, once/cycle) > Insurance Ticket (full bet, consumed) > Insur
 // Safe-click guarantee (baseline rule, not paywalled)
 Click 1 of every attempt can never be a bomb (converts to empty) — no
 information-free instant death. Bombproof Boots relic extends this to click 2.
+
+// Bomb Sense flag bonus (Bomb Sense meta-skill, calcFlagBonus)
++BOMB_FLAG_BONUS ($8) per correctly-flagged bomb, paid on BOTH cashout
+(itemized cash line) AND bust (added to wallet silently, no penalty for wrong flags)
 ```
 
 ---
@@ -671,7 +699,9 @@ they're all collected), so a run naturally diversifies instead of re-offering ow
 ## UI Layout
 
 ```
-Top bar (full width): EXPLODDS · [🛠 debug (DEV only)] [🔊 mute]
+Top bar (full width): EXPLODDS · [🛠 debug (DEV only)] [🔊 mute] [END GAME]
+  (END GAME hidden during START/GAME_OVER; two-click confirm — first click arms
+  it for 4s, showing CONFIRM END?, second click dispatches END_GAME)
 
 Centered table (max-w-5xl, vertically centered, floating casino-panel cards):
 ┌────────────────┐  ┌────────────────────┐  ┌──────────────────┐
@@ -689,7 +719,8 @@ Centered table (max-w-5xl, vertically centered, floating casino-panel cards):
 │ bet card       │  │   full width)      │  │                  │
 │ PLACE BET/     │  │                    │  │                  │
 │  CASHOUT       │  │                    │  │                  │
-│ scanner/items  │  │                    │  │                  │
+│ FLAG BOMB/     │  │                    │  │                  │
+│  scanner/items │  │                    │  │                  │
 └────────────────┘  └────────────────────┘  └──────────────────┘
 
 Deposit is pick-then-confirm: three $ preset buttons (25%/50%/max of what's
@@ -745,8 +776,9 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 | DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — may end the cycle immediately |
 | PLACE_CONSUMABLE | Tile click in PLACEMENT | assign consumable to tile |
 | SKIP_PLACEMENT | Button | skip remaining placements → CLEARING |
-| TILE_CLICK | Grid click | handleTileClick (symbol/empty/bomb logic) |
-| ACTIVATE_SCANNER | Button | set pending_scanner_axis |
+| TILE_CLICK | Grid click | handleTileClick — routes to toggleFlag if flag_mode, else symbol/empty/bomb logic |
+| ACTIVATE_SCANNER | Button | set pending_scanner_axis, clears flag_mode |
+| TOGGLE_FLAG_MODE | FLAG BOMB button | flips flag_mode (Bomb Sense skill), clears pending_scanner_axis; no-op if maxPlayerFlags is 0 |
 | CASHOUT | Button | handleCashout → phase RESULTS; computed toBetPhase/settleFinalAttempt result stashed in pending_next_phase |
 | DISMISS_RESULTS | ResultsOverlay CONTINUE | dismissResults — applies pending_next_phase, clears pending_results |
 | BUST_FLASH_END | CONTINUE button (after ~700ms reveal) | → toBetPhase or settleFinalAttempt |
@@ -755,11 +787,13 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 | BUY_RELIC | Shop | tickets -= cost, add to relics |
 | BUY_PACK | Shop | buyPack(state, index) — index into shop_packs (3 slots, kinds can repeat); themed grants both stacks directly, axis sets pending_pack_choices |
 | PICK_PACK_BOOST | Shop reveal card click | pickPackBoost — appends to boosts[] |
+| SKIP_PACK_BOOST | Shop reveal SKIP button | skipPackBoost — clears pending_pack_choices/picks_remaining, grants nothing (pack was already paid for) |
 | BUY_RELIC_CASE | Shop | buyRelicCase — tickets -= price, max_relic_slots += 1 |
 | REROLL_CONSUMABLES | Shop | tickets -= 2, new consumable list |
 | REROLL_RELICS | Shop | tickets -= 2, new relic list |
 | REROLL_PACKS | Shop | tickets -= 2, new shop_packs (3 fresh slots, kinds re-rolled) |
 | NEXT_CYCLE | Shop button | startNextCycle → EVENT_CARD or BOSS_INTRO (no-op while a pack pick is pending) |
+| END_GAME | Top bar END GAME button (two-click confirm) | resolveCycleFailure → GAME_OVER; no-op if phase is already START/GAME_OVER |
 | RESTART | Game over | createInitialState → START |
 | DEBUG_PATCH | DebugPanel (DEV only) | `{ ...state, ...patch }` — direct state override for testing |
 
@@ -767,11 +801,24 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 
 ## Common Pitfalls
 
+- **`state.player_flags` (Bomb Sense guesses) is a completely separate concept from
+  `Tile.state === 'flagged'`** (Bomb Detector consumable's "this hidden tile IS a
+  known bomb, still clickable" marker). Don't conflate them — a player-flagged tile
+  can be in ANY pre-reveal `TileState` (hidden/hinted/flagged), `player_flags` just
+  tracks indices in a GameState array, never touching `Tile.state` itself.
 - **Deposit is pick-then-confirm**, not one-click. `LeftPanel` holds `depositAmount`
   as local component state (three $ quick-set buttons, no slider — only adjust it),
   and a separate CONFIRM DEPOSIT button dispatches the actual `DEPOSIT` action.
   Resets to `depositCap` via a `useEffect` keyed on `depositCap` changing (new
   attempt/cycle).
+- **The 100% ("max") deposit preset must use `depositCap` unrounded, never
+  `Math.round(depositCap / 5) * 5`.** The 25%/50% presets round to the nearest $5
+  for nicer numbers, but rounding the max preset the same way can zero it out
+  when `depositCap` is small (e.g. `$1` wallet → rounds to `$0`) — since betting
+  is also blocked below `minBet`, that silently soft-locks BET phase with no
+  legal action available at all, even though wallet > 0 (not a real game-over
+  per the rule below). The max preset is the escape hatch and must always equal
+  the true `depositCap`.
 - **`getSymbolOdds`'s payout column is deliberately pinned to `mult = 1.0`**, not
   `state.multiplier`. It's an "upgrade level" readout (what a boost/relic/event
   is doing to a symbol's base value) — if it used the live attempt multiplier,

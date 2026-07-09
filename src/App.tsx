@@ -4,7 +4,9 @@ import {
   createInitialState, handleTileClick, handleCashout, handlePlaceBet,
   handleBustFlashEnd, getMinBet, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
+  maxPlayerFlags,
   rerollConsumables, rerollRelics, startNextCycle, drawEventCards, interestRate,
+  resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from './gameLogic';
 import { calcTileBaseCash, ALL_CONSUMABLES } from './constants';
@@ -42,6 +44,7 @@ type Action =
   | { type: 'TILE_CLICK'; index: number }
   | { type: 'ACTIVATE_SCANNER'; axis: 'row' | 'col' }
   | { type: 'CANCEL_SCANNER' }
+  | { type: 'TOGGLE_FLAG_MODE' }
   | { type: 'CASHOUT' }
   | { type: 'DISMISS_RESULTS' }
   | { type: 'BUST_FLASH_END' }
@@ -56,6 +59,7 @@ type Action =
   | { type: 'REROLL_RELICS' }
   | { type: 'REROLL_PACKS' }
   | { type: 'NEXT_CYCLE' }
+  | { type: 'END_GAME' }
   | { type: 'RESTART' }
   | { type: 'DEBUG_PATCH'; patch: Partial<GameState> };
 
@@ -127,10 +131,14 @@ function reducer(state: GameState, action: Action): GameState {
       return handleTileClick(state, action.index);
 
     case 'ACTIVATE_SCANNER':
-      return { ...state, pending_scanner_axis: action.axis };
+      return { ...state, pending_scanner_axis: action.axis, flag_mode: false };
 
     case 'CANCEL_SCANNER':
       return { ...state, pending_scanner_axis: null };
+
+    case 'TOGGLE_FLAG_MODE':
+      if (state.phase !== 'CLEARING' || maxPlayerFlags(state) <= 0) return state;
+      return { ...state, flag_mode: !state.flag_mode, pending_scanner_axis: null };
 
     case 'CASHOUT': {
       if (state.phase !== 'CLEARING') return state;
@@ -220,6 +228,10 @@ function reducer(state: GameState, action: Action): GameState {
     case 'NEXT_CYCLE':
       return state.pending_pack_choices !== null ? state : startNextCycle(state);
 
+    case 'END_GAME':
+      if (state.phase === 'START' || state.phase === 'GAME_OVER') return state;
+      return resolveCycleFailure(state);
+
     case 'RESTART':
       return createInitialState();
 
@@ -297,7 +309,17 @@ export default function App() {
   const [debugReveal, setDebugReveal] = useState(false);
   const [bustRevealReady, setBustRevealReady] = useState(false);
   const [showSkillTree, setShowSkillTree] = useState(false);
+  const [endGameConfirm, setEndGameConfirm] = useState(false);
   const prestigeAwarded = useRef(false);
+
+  // END GAME needs a second click to confirm — first click arms it, second
+  // (within 4s) actually ends the run. Any phase change disarms it.
+  useEffect(() => {
+    if (!endGameConfirm) return;
+    const t = setTimeout(() => setEndGameConfirm(false), 4000);
+    return () => clearTimeout(t);
+  }, [endGameConfirm]);
+  useEffect(() => { setEndGameConfirm(false); }, [state.phase]);
 
   useSounds(state);
 
@@ -380,6 +402,19 @@ export default function App() {
           >
             {muted ? '🔇' : '🔊'}
           </button>
+          {state.phase !== 'START' && state.phase !== 'GAME_OVER' && (
+            <button
+              onClick={() => {
+                if (endGameConfirm) { dispatch({ type: 'END_GAME' }); setEndGameConfirm(false); }
+                else setEndGameConfirm(true);
+              }}
+              title={endGameConfirm ? 'Click again to confirm' : 'End this run'}
+              className="chip font-mono text-sm cursor-pointer"
+              style={{ color: endGameConfirm ? 'var(--red)' : 'var(--text-muted)' }}
+            >
+              {endGameConfirm ? 'CONFIRM END?' : 'END GAME'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -519,6 +554,10 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
   const hasScanner = state.consumables_owned.includes('scanner');
   const scannerActive = state.pending_scanner_axis !== null;
 
+  // Bomb Sense flag state
+  const flagCap = maxPlayerFlags(state);
+  const flagsUsed = state.player_flags.length;
+
   // Deposit control — only actionable between attempts, while cash remains to commit
   const remainingDeadline = Math.max(0, state.deadline - state.deposited);
   const depositCap = Math.min(state.wallet, remainingDeadline);
@@ -574,7 +613,13 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
           <div className="flex flex-col gap-1.5 mt-2">
             <div className="flex gap-1">
               {[0.25, 0.5, 1].map(frac => {
-                const amt = Math.max(0, Math.min(depositCap, Math.round((depositCap * frac) / 5) * 5));
+                // The 100% ("max") preset must always equal the full depositCap,
+                // unrounded — rounding it to the nearest $5 could zero out a
+                // small leftover wallet and soft-lock the BET phase (can't bet,
+                // can't deposit, can't advance).
+                const amt = frac === 1
+                  ? depositCap
+                  : Math.max(0, Math.min(depositCap, Math.round((depositCap * frac) / 5) * 5));
                 return (
                   <button
                     key={frac}
@@ -706,6 +751,21 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
           }}
         >
           {canCashout ? (<>CASHOUT<br />+${state.attempt_earnings.toFixed(2)}</>) : 'CASHOUT'}
+        </button>
+      )}
+
+      {/* Bomb Sense: flag suspected bombs, cashed in for a bonus when the attempt ends */}
+      {isClearing && flagCap > 0 && (
+        <button
+          onClick={() => dispatch({ type: 'TOGGLE_FLAG_MODE' })}
+          className="font-mono text-xs px-2 py-1.5 rounded cursor-pointer"
+          style={{
+            background: state.flag_mode ? 'rgba(250,204,21,0.15)' : 'var(--bg-raised)',
+            border: `1px solid ${state.flag_mode ? '#facc15' : 'var(--border)'}`,
+            color: state.flag_mode ? '#facc15' : 'var(--text-muted)',
+          }}
+        >
+          🚩 {state.flag_mode ? `FLAGGING (${flagsUsed}/${flagCap})` : `FLAG BOMB (${flagsUsed}/${flagCap})`}
         </button>
       )}
 
