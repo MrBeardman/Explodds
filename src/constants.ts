@@ -1,17 +1,18 @@
 import type {
-  ConsumableId, EventCardId, RelicId,
+  BossId, BoostAxis, ConsumableId, EventCardId, RelicId,
   ShopConsumableItem, ShopRelicItem, SymbolId,
 } from './types';
 
 // ─── Cycle deadlines ──────────────────────────────────────────────────────────
 
-const FIXED_DEADLINES = [100, 180, 290, 430, 600];
+const FIXED_DEADLINES = [80, 140, 190, 280, 400];
+const DEADLINE_GROWTH = 1.30;
 
 export function calcDeadline(cycle: number): number {
   if (cycle <= 5) return FIXED_DEADLINES[cycle - 1];
-  let d = 600;
+  let d = FIXED_DEADLINES[4];
   for (let i = 5; i < cycle; i++) {
-    d = Math.round((d * 1.35) / 10) * 10;
+    d = Math.round((d * DEADLINE_GROWTH) / 10) * 10;
   }
   return d;
 }
@@ -19,10 +20,11 @@ export function calcDeadline(cycle: number): number {
 // ─── Base bombs per cycle ─────────────────────────────────────────────────────
 
 export function getBaseBombs(cycle: number): number {
-  if (cycle <= 2) return 3;
-  if (cycle <= 4) return 5;
-  if (cycle <= 6) return 7;
-  return 9;
+  if (cycle <= 2) return 2;
+  if (cycle <= 4) return 4;
+  if (cycle <= 6) return 6;
+  // Endless escalation: +1 bomb every 2 cycles past 7, capped at 14
+  return Math.min(9 + Math.floor((cycle - 7) / 2), 14);
 }
 
 // ─── Dynamic bomb count ───────────────────────────────────────────────────────
@@ -36,9 +38,75 @@ export function calcBombs(bet: number, wallet: number, cycle: number): number {
 
 // ─── Tile cash calculation ────────────────────────────────────────────────────
 
+// Proportional to bet so bigger bets are a real risk/reward choice and the
+// bankroll can compound against the exponential deadline curve.
 export function calcTileBaseCash(bet: number): number {
-  return 3 + bet / 20;
+  return 3 + bet * 0.4;
 }
+
+// ─── Deposit / interest / min-bet scaling ─────────────────────────────────────
+
+export const BASE_INTEREST_RATE = 0.07;       // per successful cashout, on the deposited pool
+export const COMPOUND_CHIP_BONUS_RATE = 0.03; // Compound Chip relic adds this
+export const INFLATOR_INTEREST_MULT = 2;      // Inflator boss doubles the rate
+
+export const MIN_BET_BASE = 10;
+export const MIN_BET_PER_CYCLE = 2;           // gentler than the spec's +$5 — tuned via sim
+export const GREED_MODE_MIN_BET = 25;
+
+// ─── Ticket economy ────────────────────────────────────────────────────────────
+
+export const TICKETS_COMPLETE_ATTEMPT = 1;    // any cashout or bust
+export const TICKETS_SUCCESSFUL_CASHOUT = 2;  // cashed out, didn't bust
+export const TICKETS_PROFITABLE = 3;          // earnings > bet × 1.5
+export const TICKETS_PAY_IN_FULL = 5;         // deadline fully deposited
+
+// ─── Packs & symbol boosts ─────────────────────────────────────────────────────
+
+export const PACK_BASE_PRICE = 18;
+export const PACK_PRICE_STEP = 4;
+export const BOOST_FREQUENCY_MULT = 1.5; // weight ×= this, per matching stack
+export const BOOST_PAYOUT_MULT = 1.25;   // symbol modifier ×= this, per matching stack
+
+export const PACK_TYPE_INFO: Record<BoostAxis, { name: string; emoji: string; description: string }> = {
+  frequency: { name: 'Frequency Pack', emoji: '🎯', description: 'Pick a symbol — appears ×1.5 more often, permanently' },
+  payout:    { name: 'Payout Pack',    emoji: '💰', description: 'Pick a symbol — pays ×1.25 more, permanently' },
+};
+
+// Themed packs — fixed to one symbol, no reveal step: buying grants BOTH a
+// frequency and a payout stack on that symbol immediately. Priced higher than
+// a generic pack (bundles 2 stacks + guaranteed targeting). A rarer roll among
+// the 3 pack slots each shop visit rather than its own dedicated section.
+export const THEMED_PACK_PRICE_MULT = 2.2;
+export const PACK_THEMES: Record<SymbolId, { name: string; emoji: string }> = {
+  diamond: { name: 'Rich Pack',   emoji: '💍' },
+  cherry:  { name: 'Sweet Pack',  emoji: '🍬' },
+  banana:  { name: 'Ripe Pack',   emoji: '🐒' },
+  star:    { name: 'Bright Pack', emoji: '🌟' },
+  bell:    { name: 'Chime Pack',  emoji: '🎐' },
+};
+
+// 3 pack slots per shop visit, each independently rolled: 40% frequency /
+// 40% payout / 20% themed. Axis (frequency/payout) slots also roll a "huge"
+// chance — 5 reveal choices instead of 3, priced up accordingly.
+export const PACK_SLOT_COUNT = 3;
+export const PACK_KIND_WEIGHTS: { kind: 'frequency' | 'payout' | 'themed'; weight: number }[] = [
+  { kind: 'frequency', weight: 2 },
+  { kind: 'payout', weight: 2 },
+  { kind: 'themed', weight: 1 },
+];
+export const PACK_CHOICE_COUNT = 3;
+export const HUGE_PACK_CHOICE_COUNT = 5;
+export const HUGE_PACK_CHANCE = 0.2;
+export const HUGE_PACK_PRICE_MULT = 1.8;
+export const PACK_PICK_COUNT = 1;      // normal packs: pick 1 of 3
+export const HUGE_PACK_PICK_COUNT = 2; // huge packs: pick 2 of 5
+
+// ─── Relic slots ────────────────────────────────────────────────────────────────
+
+export const RELIC_CASE_BASE_PRICE = 16; // tickets
+export const RELIC_CASE_PRICE_STEP = 6;
+export const MAX_BONUS_RELIC_SLOTS = 3;  // Relic Case can push the cap from 6 to 9
 
 // ─── Symbol definitions ───────────────────────────────────────────────────────
 
@@ -56,7 +124,6 @@ export const SYMBOLS: SymbolDef[] = [
   { id: 'banana',  emoji: '🍌', name: 'Banana',  modifier: 1.2, weight: 18 },
   { id: 'star',    emoji: '⭐', name: 'Star',    modifier: 1.5, weight: 12 },
   { id: 'bell',    emoji: '🔔', name: 'Bell',    modifier: 0.9, weight: 18 },
-  { id: 'coin',    emoji: '🪙', name: 'Coin',    modifier: 2.0, weight: 12 },
 ];
 
 export const SYMBOL_MAP: Record<SymbolId, SymbolDef> = Object.fromEntries(
@@ -77,7 +144,6 @@ export const EVENT_CARDS: EventCardDef[] = [
   { id: 'cherry_season',  emoji: '🍒', name: 'Cherry Season',  description: 'Cherry weight ×2 this cycle' },
   { id: 'banana_bonanza', emoji: '🍌', name: 'Banana Bonanza', description: 'Banana weight ×2 this cycle' },
   { id: 'star_shower',    emoji: '⭐', name: 'Star Shower',    description: 'Star worth ×1.5 this cycle' },
-  { id: 'coin_rush',      emoji: '🪙', name: 'Coin Rush',      description: 'Coin weight ×2, Coin Jackpot gives +6🎫' },
   { id: 'safe_zone',      emoji: '🛡', name: 'Safe Zone',      description: '4 fewer empty tiles this cycle' },
   { id: 'danger_pay',     emoji: '💥', name: 'Danger Pay',     description: '+3 extra bombs per attempt, tile value ×1.4' },
   { id: 'bell_ringer',    emoji: '🔔', name: 'Bell Ringer',    description: 'Bell Storm threshold reduced to 3 bells' },
@@ -89,15 +155,46 @@ export const EVENT_CARD_MAP = Object.fromEntries(
   EVENT_CARDS.map(c => [c.id, c])
 ) as Record<EventCardId, EventCardDef>;
 
+// ─── Bosses (every 3rd cycle) ─────────────────────────────────────────────────
+
+export interface BossDef {
+  id: BossId;
+  name: string;
+  emoji: string;
+  description: string;
+}
+
+export const BOSSES: BossDef[] = [
+  { id: 'monoculturist', name: 'The Monoculturist', emoji: '🍒', description: 'Only 2 symbol types spawn this cycle' },
+  { id: 'saboteur',      name: 'The Saboteur',      emoji: '🧨', description: 'Every 4th symbol cleared arms a new bomb' },
+  { id: 'blackout',      name: 'The Blackout',      emoji: '🌑', description: 'Empty tiles show no bomb counts' },
+  { id: 'taxman',        name: 'The Taxman',        emoji: '🧾', description: '25% tax on every cashout' },
+  { id: 'glutton',       name: 'The Glutton',       emoji: '🕳', description: '+4 empty tiles on every board' },
+  { id: 'short_fuse',    name: 'The Short Fuse',    emoji: '⏱', description: 'Only 2 attempts this cycle' },
+  { id: 'warden',        name: 'The Warden',        emoji: '⛓', description: 'Bet locked to 25% of your wallet' },
+  { id: 'inflator',      name: 'The Inflator',      emoji: '📈', description: 'Deadline +25% — but double interest if beaten' },
+  { id: 'blightbringer', name: 'The Blightbringer', emoji: '🥀', description: 'One random symbol is nerfed to 30% weight' },
+];
+
+export const BOSS_MAP = Object.fromEntries(
+  BOSSES.map(b => [b.id, b])
+) as Record<BossId, BossDef>;
+
+export const BOSS_REWARD_TICKETS = 8;
+
 // ─── Consumables ──────────────────────────────────────────────────────────────
 
 export const ALL_CONSUMABLES: ShopConsumableItem[] = [
-  { id: 'scatter_reveal', name: 'Scatter Reveal', price: 15, emoji: '✨', description: 'Reveal 3 safe tiles before attempt', sold: false },
-  { id: 'scanner',        name: 'Scanner',        price: 20, emoji: '🔍', description: 'Reveal one full row or column', sold: false },
-  { id: 'defuser',        name: 'Defuser',        price: 25, emoji: '🔧', description: 'Placed on tile — bomb becomes empty', sold: false },
-  { id: 'tile_magnet',    name: 'Tile Magnet',    price: 18, emoji: '🧲', description: 'Auto-reveals nearest safe tile every 5 clears', sold: false },
-  { id: 'lucky_tile',     name: 'Lucky Tile',     price: 12, emoji: '🍀', description: 'Placed tile — if safe, +$5 flat earnings', sold: false },
-  { id: 'empty_eraser',   name: 'Empty Eraser',   price: 10, emoji: '🧹', description: 'Removes 2 empty tiles from next board', sold: false },
+  { id: 'scatter_reveal',   name: 'Scatter Reveal',   price: 15, emoji: '✨', description: 'Reveal 3 safe tiles before attempt', sold: false },
+  { id: 'scanner',          name: 'Scanner',          price: 20, emoji: '🔍', description: 'Reveal one full row or column', sold: false },
+  { id: 'defuser',          name: 'Defuser',          price: 25, emoji: '🔧', description: 'Placed on tile — bomb becomes empty', sold: false },
+  { id: 'tile_magnet',      name: 'Tile Magnet',      price: 18, emoji: '🧲', description: 'Auto-hints nearest safe tile every 5 clears (one attempt)', sold: false },
+  { id: 'lucky_tile',       name: 'Lucky Tile',       price: 12, emoji: '🍀', description: 'Placed tile — if safe, +$5 flat earnings', sold: false },
+  { id: 'empty_eraser',     name: 'Empty Eraser',     price: 10, emoji: '🧹', description: 'Removes 2 empty tiles from next board', sold: false },
+  { id: 'bomb_detector',    name: 'Bomb Detector',    price: 22, emoji: '📡', description: 'Marks 2 bombs with ⚠ on next board', sold: false },
+  { id: 'insurance_ticket', name: 'Insurance Ticket', price: 15, emoji: '🎟', description: 'Next bust: your bet is refunded', sold: false },
+  // mult_vial removed from the pool for now (starting-mult bonus disabled — confusing for playtest).
+  // Type stays in ConsumableId; gameLogic's mult_vial branch is simply unreachable while unsold.
 ];
 
 // Consumables that need pre-attempt tile placement
@@ -106,18 +203,34 @@ export const PLACEABLE_CONSUMABLES: ConsumableId[] = ['defuser', 'lucky_tile'];
 // ─── Relics ───────────────────────────────────────────────────────────────────
 
 export const ALL_RELICS: ShopRelicItem[] = [
-  { id: 'greed_chip',     name: 'Greed Chip',      cost: 8,  emoji: '🪙', description: '+$3 flat on every cashout', sold: false, owned: false },
-  { id: 'adrenaline_core',name: 'Adrenaline Core', cost: 10, emoji: '⚡', description: 'Multiplier grows 20% faster', sold: false, owned: false },
-  { id: 'cherry_picker',  name: 'Cherry Picker',   cost: 10, emoji: '🍒', description: 'Cherry Rush pays $20 (was $12)', sold: false, owned: false },
-  { id: 'banana_baron',   name: 'Banana Baron',    cost: 12, emoji: '🍌', description: 'Banana Split gives ×3 (was ×2)', sold: false, owned: false },
-  { id: 'star_magnet',    name: 'Star Magnet',     cost: 8,  emoji: '⭐', description: 'Star Power pays $28 (was $18)', sold: false, owned: false },
-  { id: 'bell_captain',   name: 'Bell Captain',    cost: 10, emoji: '🔔', description: 'Bell Storm sets streak to 20', sold: false, owned: false },
-  { id: 'diamond_dealer', name: 'Diamond Dealer',  cost: 12, emoji: '💎', description: 'Diamond Run gives +25% (was +15%)', sold: false, owned: false },
-  { id: 'coin_tycoon',    name: 'Coin Tycoon',     cost: 8,  emoji: '💰', description: 'Coin Jackpot gives +8🎫 (was +4)', sold: false, owned: false },
-  { id: 'safe_digger',    name: 'Safe Digger',     cost: 8,  emoji: '⛏', description: '3 fewer empty tiles every board', sold: false, owned: false },
-  { id: 'bomb_suit',      name: 'Bomb Suit',       cost: 15, emoji: '🦺', description: 'First bust each cycle: bet refunded', sold: false, owned: false },
-  { id: 'hot_hands',      name: 'Hot Hands',       cost: 10, emoji: '🔥', description: 'Streak 5 bonus: +$8 flat (replaces mult bonus)', sold: false, owned: false },
-  { id: 'lucky_charm',    name: 'Lucky Charm',     cost: 12, emoji: '🎰', description: 'One guaranteed coin tile per board', sold: false, owned: false },
+  // Existing 12
+  { id: 'greed_chip',      name: 'Greed Chip',       cost: 8,  emoji: '🪙', rarity: 'common',    description: '+$3 flat on every cashout', sold: false, owned: false },
+  { id: 'adrenaline_core', name: 'Adrenaline Core',  cost: 10, emoji: '⚡', rarity: 'rare',      description: 'Multiplier grows 20% faster', sold: false, owned: false },
+  { id: 'cherry_picker',   name: 'Cherry Picker',    cost: 10, emoji: '🍒', rarity: 'common',    description: 'Cherry Rush pays $20 (was $12)', sold: false, owned: false },
+  { id: 'banana_baron',    name: 'Banana Baron',     cost: 12, emoji: '🍌', rarity: 'rare',      description: 'Banana Split gives ×3 (was ×2)', sold: false, owned: false },
+  { id: 'star_magnet',     name: 'Star Magnet',      cost: 8,  emoji: '⭐', rarity: 'common',    description: 'Star Power pays $28 (was $18)', sold: false, owned: false },
+  { id: 'bell_captain',    name: 'Bell Captain',     cost: 10, emoji: '🔔', rarity: 'rare',      description: 'Bell Storm sets streak to 20', sold: false, owned: false },
+  { id: 'diamond_dealer',  name: 'Diamond Dealer',   cost: 12, emoji: '💎', rarity: 'rare',      description: 'Diamond Run gives +25% (was +15%)', sold: false, owned: false },
+  { id: 'safe_digger',     name: 'Safe Digger',      cost: 8,  emoji: '⛏', rarity: 'common',    description: '3 fewer empty tiles every board', sold: false, owned: false },
+  { id: 'bomb_suit',       name: 'Bomb Suit',        cost: 15, emoji: '🦺', rarity: 'rare',      description: 'First bust each cycle: bet refunded', sold: false, owned: false },
+  { id: 'hot_hands',       name: 'Hot Hands',        cost: 10, emoji: '🔥', rarity: 'common',    description: 'Streak 5 bonus: +$8 flat (replaces mult bonus)', sold: false, owned: false },
+  { id: 'lucky_charm',     name: 'Lucky Charm',      cost: 12, emoji: '🎰', rarity: 'rare',      description: 'One guaranteed diamond tile per board', sold: false, owned: false },
+  // Expansion — economy / board / mult / bets
+  { id: 'ticket_printer',  name: 'Ticket Printer',   cost: 8,  emoji: '🖨', rarity: 'common',    description: '+2 extra 🎫 on every cashout', sold: false, owned: false },
+  { id: 'haggler',         name: 'Haggler',          cost: 8,  emoji: '🤝', rarity: 'common',    description: 'Consumables cost 30% less', sold: false, owned: false },
+  { id: 'surveyor',        name: 'Surveyor',         cost: 8,  emoji: '🗺', rarity: 'common',    description: '1 empty tile starts revealed each board', sold: false, owned: false },
+  // head_start and momentum_core removed from the pool for now (starting-mult
+  // bonus disabled — confusing for playtest). Types stay in RelicId; the
+  // gameLogic branches that check for them are simply unreachable while unsold.
+  { id: 'compound_chip',   name: 'Compound Chip',    cost: 12, emoji: '🏦', rarity: 'rare',      description: '+3% interest rate on deposited cash', sold: false, owned: false },
+  { id: 'insurance_policy',name: 'Insurance Policy', cost: 12, emoji: '📋', rarity: 'rare',      description: 'Busts refund 30% of your bet', sold: false, owned: false },
+  { id: 'high_roller',     name: 'High Roller',      cost: 12, emoji: '🎩', rarity: 'rare',      description: 'Bets ≥ half your wallet: −2 bombs', sold: false, owned: false },
+  { id: 'bombproof_boots', name: 'Bombproof Boots',  cost: 20, emoji: '🥾', rarity: 'legendary', description: 'First TWO clicks each attempt can never be a bomb (first click is always safe for everyone)', sold: false, owned: false },
+  // Combo-crafting expansion
+  { id: 'synergist',       name: 'Synergist',        cost: 16, emoji: '🔁', rarity: 'legendary', description: 'Every combo permanently boosts that symbol\'s payout ×1.25 (stacks)', sold: false, owned: false },
+  { id: 'sixth_sense',     name: 'Sixth Sense',      cost: 14, emoji: '👁', rarity: 'rare',      description: 'Cleared symbol tiles also show their adjacent bomb count', sold: false, owned: false },
+  { id: 'chain_reaction',  name: 'Chain Reaction',   cost: 14, emoji: '💥', rarity: 'rare',      description: '2+ combos in one attempt: cashout earns ×1.5', sold: false, owned: false },
+  { id: 'specialist',      name: 'Specialist',       cost: 12, emoji: '🎯', rarity: 'rare',      description: 'Packs favor your most-boosted symbol instead of avoiding it', sold: false, owned: false },
 ];
 
 export const RELIC_MAP = Object.fromEntries(
@@ -129,7 +242,10 @@ export const RELIC_MAP = Object.fromEntries(
 export const GRID_SIZE = 25;
 export const GRID_COLS = 5;
 export const STARTING_WALLET = 150;
-export const MIN_BET = 10;
 export const BET_STEP = 5;
 export const MAX_ACTIVE_RELICS = 6;
-export const MAX_SHOP_ITEMS = 4;
+export const MAX_SHOP_ITEMS = 3;
+
+// Cascade skill (see src/meta.ts) level 1 cap — how many tiles a single
+// flood-fill chain can reveal before it's fully upgraded (level 2, unlimited).
+export const CASCADE_LEVEL1_CAP = 6;

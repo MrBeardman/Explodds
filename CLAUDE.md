@@ -7,13 +7,62 @@ Complete reference for continuing development. Read this before touching any cod
 ## What This Game Is
 
 **Explodds: Mine the Odds** is a debt-deadline roguelite built on a 5×5 Minesweeper grid.
-Think CloverPit (endless pressure loop) with Balatro-style relics/consumables.
+Think CloverPit (endless pressure loop) with Balatro-style relics/consumables/packs.
 
-The player survives **endless cycles**. Each cycle has a **DEADLINE** (cash amount).
-They get **3 ATTEMPTS** per cycle. Each attempt = one board. After 3 attempts, deadline is checked.
-Miss the deadline → **GAME OVER**. Beat it → shop, then next cycle with a bigger deadline.
+The player survives **endless cycles**. Each cycle has a **DEADLINE** (cash amount) that
+must be actively **deposited** — cash earned in attempts stays in the wallet until the
+player chooses to commit it. They get **3 ATTEMPTS** per cycle (2 under Short Fuse).
+Miss the deadline → **GAME OVER**. Meet it (via deposit, any time) → shop, then next
+cycle with a bigger deadline.
 
 This is NOT a 6-round game with a win condition. It is endless until the player fails.
+
+**Two separate cash pools:** `wallet` (bettable, can hit $0) and `deposited` (locked
+toward the deadline, earns interest, never bettable again). Depositing is the core
+new decision this session added — see "Deposit & Interest" below.
+
+**Boss cycles:** every 3rd cycle (3, 6, 9, …) is a boss cycle — no event card pick;
+instead a seeded boss rule warps the whole cycle (see Bosses section). The shop
+previews the upcoming boss so players can prep. Beating one pays +8🎫.
+
+**Skill layer:** revealed empty tiles show a minesweeper-style number = count of adjacent
+bombs (8-neighborhood). Empties give no cash and break the streak, but they are the
+information layer — players use the numbers to deduce safe tiles. Clicking a 0-adjacency
+empty tile **cascades open connected safe tiles** (`floodFillReveal` in gameLogic.ts)
+exactly like classic minesweeper — a real deduction payoff, not just a click-one-at-a-time
+slog, and any symbol tiles caught in the cascade get revealed and paid out too. **How much
+it cascades is gated behind the Cascade Sense meta-skill** (see "Meta-Progression / Skill
+Tree" below) — level 0 (new-player default) reveals only the clicked tile, no chain at
+all; level 1 caps the chain at `CASCADE_LEVEL1_CAP` (6) tiles; level 2 is the unlimited
+version described above. The **first click of every attempt can never be a bomb** (baseline
+fairness rule — no information-free instant death; Bombproof Boots relic extends this
+to the first two clicks). The **paytable**
+(top-left) shows GENERAL odds + payout per symbol — weight-share and cash value at the
+current bet/mult, the same formula whether you're still betting or mid-attempt. It is
+**deliberately NOT counted from this specific board's remaining tiles** (that read as
+noisy and board-specific rather than informative). Values that differ from a symbol's
+pure base stats (event/boss/pack-boost in effect) render in a distinct color with a
+hover tooltip showing the delta — see `getSymbolOdds` in gameLogic.ts.
+
+**Starting-multiplier bonus is currently disabled** (confusing for playtesting). Head
+Start and Momentum Core relics and the Mult Vial consumable are removed from the shop
+pools — their `RelicId`/`ConsumableId` union entries and gameLogic formulas still exist
+(harmless no-ops since they can never be owned), so re-enabling later is just adding
+them back to `ALL_RELICS`/`ALL_CONSUMABLES` in constants.ts.
+
+**Modifiers stack permanently.** Event-card picks (`active_events: EventCardId[]`) are
+never replaced or reset — every pick from every cycle for the whole run stays active.
+This is a second permanent build axis alongside relics and packs.
+
+**Packs & boosts:** the shop sells cash-funded packs (`📦`) that reveal 3 candidate
+permanent symbol boosts (frequency or payout, on a specific symbol) — pick 1, keep it
+forever. This is the "build a strategy around one symbol" layer.
+
+**Balance harness:** `npm run sim` (scripts/sim.mjs) Monte-Carlos the economy across
+skill levels and bet styles, modeling both "deposit early for interest" and "defer
+deposits" strategies (takes whichever wins, like a real player would). Its params
+block mirrors constants.ts — KEEP IN SYNC when tuning formulas. Target: random
+clicker dies ~cycle 2, decent play ~2-4, expert ~3-8+ with deep runs possible.
 
 ---
 
@@ -32,22 +81,37 @@ This is NOT a 6-round game with a win condition. It is endless until the player 
 ## File Map
 
 ```
+public/sfx/           — SFX .wav files (placeholders from `npm run sfx`; drop in
+                        licensed files with the same names to replace)
+scripts/
+├── sim.mjs           — Monte-Carlo balance harness (`npm run sim`)
+└── gen-sfx.mjs       — Placeholder WAV synthesizer (`npm run sfx`)
 src/
-├── types.ts          — All TypeScript interfaces (GameState, Tile, etc.)
-├── constants.ts      — Symbols, relics, consumables, event cards, formulas
+├── types.ts          — All TypeScript interfaces (GameState, Tile, SymbolBoost, etc.)
+├── constants.ts      — Symbols, relics, consumables, event cards, bosses, packs, formulas
 ├── gameLogic.ts      — All pure game functions (no React)
+├── meta.ts           — Cross-run meta-progression: skill catalog + localStorage persistence
 ├── rng.ts            — Seeded RNG utilities
-├── App.tsx           — useReducer + layout + LeftPanel component
-├── index.css         — CSS variables, animations
+├── sound.ts          — File-based SFX manager (mute persisted in localStorage)
+├── App.tsx           — useReducer + centered layout + LeftPanel + useSounds hook
+├── index.css         — CSS variables, animations, stat cards, rarity colors
 └── components/
-    ├── Grid.tsx           — 5×5 tile grid + bust flash + ⓘ overlay
-    ├── HUD.tsx            — Right panel: cycle, deadline, attempts dots, mult, relics
-    ├── Shop.tsx           — Bottom-sheet overlay (consumables + relics tabs)
-    ├── EventCards.tsx     — Compact top banner (EventBanner component)
+    ├── Grid.tsx           — 5×5 tile grid + adjacency numbers + bust flash + post-bust reveal + ⓘ overlay
+    ├── HUD.tsx            — Right rail: MULT+streak (top), boss rule, attempts, modifier chips
+    ├── CycleHeader.tsx    — Slim cycle number + boss countdown, ABOVE the board
+    ├── Paytable.tsx       — Left rail top card: GENERAL symbol odds + payout (not board-specific);
+    │                        also reused inline inside Shop.tsx behind the 👁 ODDS toggle
+    ├── RelicShelf.tsx     — Horizontal relic row under the grid
+    ├── Shop.tsx           — Centered modal (odds peek + packs + consumables + relics + next-boss preview)
+    ├── DebugPanel.tsx     — Dev-only testing console (🛠 top bar, import.meta.env.DEV gated)
+    ├── EventChoice.tsx    — Full-screen untimed modifier pick (normal cycles)
+    ├── BossIntro.tsx      — Full-screen boss reveal (boss cycles)
     ├── ComboOverlay.tsx   — Animated combo notifications above grid
     ├── ConsumablePlacement.tsx — Pre-attempt tile placement overlay
+    ├── ResultsOverlay.tsx — Full-screen post-cashout breakdown (RESULTS phase)
     ├── GameOver.tsx       — Full-screen overlay (not navigation)
-    └── StartScreen.tsx    — Landing screen
+    ├── StartScreen.tsx    — Landing screen (logo.png) + SKILLS button
+    └── SkillTree.tsx      — Start-screen overlay for spending prestige on meta-skills
 ```
 
 ---
@@ -55,23 +119,25 @@ src/
 ## State Shape (GameState — src/types.ts)
 
 ```typescript
-phase: 'START' | 'EVENT_CARD' | 'BET' | 'PLACEMENT' | 'CLEARING' | 'BUST_FLASH' | 'SHOP' | 'GAME_OVER'
+phase: 'START' | 'EVENT_CARD' | 'BOSS_INTRO' | 'BET' | 'PLACEMENT' | 'CLEARING' | 'BUST_FLASH' | 'RESULTS' | 'SHOP' | 'GAME_OVER'
 
-// Economy
+// Economy — two SEPARATE pools, wallet is bettable, deposited is locked toward the deadline
 wallet: number        // player's cash (starts $150)
 tickets: number       // second currency for relics (starts 0)
 
 // Cycle
 cycle_number: number  // starts 1, never resets
-deadline: number      // cash owed at end of this cycle
-deposited: number     // paid toward deadline so far this cycle
-attempts_remaining: number  // 3 per cycle, counts down
+deadline: number      // cash that must be DEPOSITED (not just held) to pass this cycle
+deposited: number     // committed toward deadline — moved OUT of wallet, resets to 0 each cycle
+attempts_remaining: number  // 3 per cycle (2 under Short Fuse boss), counts down
 bomb_suit_used: boolean     // Bomb Suit relic — resets each cycle
 
 // Attempt
 current_bet: number         // set by slider, deducted at PLACE BET
 attempt_earnings: number    // accumulated this attempt (not in wallet yet)
 multiplier: number          // grows per symbol tile cleared
+carry_multiplier: number    // Momentum Core carry into next attempt (else 1.0)
+clicks_this_attempt: number // Bombproof Boots first-click detection
 streak: number              // consecutive symbol tiles (empty breaks it)
 streak_5_given/10/15        // milestone flags — prevent double-trigger
 banana_tile_earnings[]      // for Banana Split retroactive ×2 calculation
@@ -87,18 +153,28 @@ combos_triggered: string[]  // which combos fired this attempt (one-shot each)
 active_combo_display: ComboDisplay[]  // for overlay animation
 combo_id_counter: number    // unique IDs for React keys
 
-// Event / relics
-active_event: EventCardId | null
-event_card_options: EventCardId[]  // 3 options shown in banner
+// Modifiers — active_events STACKS PERMANENTLY, never reset mid-run
+active_events: EventCardId[]       // every modifier ever picked, still active
+active_boss: BossId | null         // set on boss cycles (3, 6, 9, …)
+event_card_options: EventCardId[]  // 3 options (empty on boss cycles)
 relics: RelicId[]
 consumables_owned: ConsumableId[]
 consumables_placed: { tile_index, type }[]  // set during PLACEMENT phase
 placement_queue / placing_index            // drives ConsumablePlacement
 pending_scanner_axis: 'row' | 'col' | null
+boosts: SymbolBoost[]       // permanent packs boosts, e.g. { symbol: 'cherry', axis: 'frequency' }
+skills: Record<SkillId, number>  // meta-progression snapshot, taken once at createInitialState()
 
 // Shop (populated when phase → SHOP)
+interest_earned_this_cycle  // accumulated interest ticks this cycle (shop header display)
+packs_opened                // drives pack price scaling (PACK_BASE_PRICE + n × PACK_PRICE_STEP)
+pending_pack_choices        // 3 candidate SymbolBoost[] mid-reveal, or null
 shop_consumables / shop_relics
 shop_consumables_rerolled / shop_relics_rerolled  // 2🎫 per reroll, once each
+
+// Results overlay (populated by handleCashout, consumed by DISMISS_RESULTS)
+pending_results: ResultsBreakdown | null  // itemized cash/ticket lines shown by ResultsOverlay
+pending_next_phase: GamePhase | null      // the phase transition handleCashout already computed
 
 // Run stats
 cycles_survived / total_earned / highest_multiplier / best_streak / seed
@@ -112,10 +188,19 @@ cycles_survived / total_earned / highest_multiplier / best_streak / seed
 START → [click NEW RUN]
 
 START_GAME → EVENT_CARD
-  (3 cards shown, 8s auto-select)
+  (full-screen untimed pick — EventChoice.tsx; no auto-select timer)
 
-SELECT_EVENT_CARD → BET
-  (bet slider, PLACE BET button)
+Boss cycles (3, 6, 9, …): startNextCycle → BOSS_INTRO instead of EVENT_CARD
+  (BossIntro.tsx full-screen reveal; CONFIRM_BOSS → toBetPhase())
+
+SELECT_EVENT_CARD → BET  (via toBetPhase; APPENDS to active_events, never replaces)
+  (bet slider, PLACE BET button, deposit quick-buttons — all available here)
+
+DEPOSIT (only legal in BET phase):
+  amount clamped to [0, min(wallet, deadline − deposited)]
+  wallet -= amount; deposited += amount
+  if deposited >= deadline: resolveCycleSuccess() — cycle ends NOW, remaining attempts unused
+  else if wallet <= 0: resolveCycleFailure()
 
 PLACE_BET:
   wallet -= bet  (immediately)
@@ -125,29 +210,122 @@ PLACE_BET:
 
 CLEARING (tiles clickable):
   - Symbol hit → earn cash, check combos
-  - Empty hit  → streak = 0, no cash
-  - Bomb hit   → phase = BUST_FLASH
-                  attempts_remaining--
-                  attempt_earnings = 0
-  - CASHOUT    → wallet += earnings, deposited += earnings
-                  attempts_remaining--
-                  if attempts > 0: → BET
-                  if attempts = 0: endCycleCheck()
+  - Empty hit  → streak = 0, no cash, shows adjacent-bomb count (cascade extent
+                  gated by state.skills.cascade — see Meta-Progression section)
+  - Bomb hit   → phase = BUST_FLASH, attempts_remaining--, attempt_earnings = 0
+                  +1 ticket (complete attempt) — NO interest, NO deposit change
+  - CASHOUT    → handleCashout computes wallet += earnings + interest tick (see
+                  below), attempts_remaining--, AND the phase it would transition
+                  to (toBetPhase() or settleFinalAttempt()) — but instead of
+                  applying that phase immediately, it stores it in
+                  pending_next_phase and an itemized pending_results, then sets
+                  phase = RESULTS. DISMISS_RESULTS (ResultsOverlay's CONTINUE
+                  button) is what actually applies pending_next_phase.
 
-BUST_FLASH (1.2s, auto-transition):
-  if attempts > 0: → BET
-  if attempts = 0: endCycleCheck()
+BUST_FLASH (~700ms auto flash, then a manual full-board reveal):
+  App.tsx runs a 700ms timer (matches the .bust-flash CSS animation) that flips
+  local `bustRevealReady` true — Grid then renders every hidden tile's true
+  content (revealAll prop) and LeftPanel swaps the CASHOUT button for a
+  CONTINUE button. Only clicking CONTINUE dispatches BUST_FLASH_END:
+  if attempts > 0: toBetPhase()
+  if attempts = 0: settleFinalAttempt()
 
-endCycleCheck():
-  if wallet >= deadline:
-    wallet -= deadline
-    interest bonus if leftover > 30% of deadline
-    → SHOP
-  else:
-    → GAME_OVER
+RESULTS (shown after every cashout, not on bust):
+  ResultsOverlay reads state.pending_results (cash/ticket breakdown, before/after
+  wallet+ticket totals) — counts the total up, "flies" it into the wallet/ticket
+  stat cards (pulse + value swap), lists every line item. CONTINUE dispatches
+  DISMISS_RESULTS → dismissResults() applies pending_next_phase (BET, SHOP, or
+  GAME_OVER — whatever handleCashout already resolved) and clears both pending_*
+  fields.
 
-SHOP → [START CYCLE N+1] → EVENT_CARD
+toBetPhase() — the only true dead end:
+  if wallet <= 0 AND deposited < deadline: resolveCycleFailure() (can neither bet nor deposit)
+  else: → BET
+  (wallet between 0 and min-bet is LEGAL — the player can still deposit what's left)
+
+settleFinalAttempt() — called when attempts_remaining hits 0:
+  auto-sweep min(wallet, deadline − deposited) into deposited first (so forgetting to
+  deposit on the last attempt doesn't cost you), THEN:
+  if deposited >= deadline: resolveCycleSuccess()
+  else: resolveCycleFailure()
+
+resolveCycleSuccess(): +5 tickets (pay in full), +8 more if boss cycle, generateShop() → SHOP
+resolveCycleFailure(): → GAME_OVER
+
+SHOP → [START CYCLE N+1] → EVENT_CARD (or BOSS_INTRO)
 ```
+
+---
+
+## Deposit & Interest (the core mechanic this session added)
+
+```typescript
+// Interest — paid on CASHOUT ONLY (never on bust), proportional to what's
+// already deposited. This is the reward for depositing EARLY in a cycle:
+// every subsequent successful cashout that cycle pays another tick.
+interestRate(state):
+  base = 0.07 (BASE_INTEREST_RATE)
+  +0.03 if Compound Chip relic
+  ×2 if Inflator boss
+  wallet += deposited × interestRate()   // on every non-bust cashout
+
+// Deposit (handleDeposit) — the only way `deposited` changes mid-cycle
+amount = clamp(requested, 0, min(wallet, deadline − deposited))
+wallet -= amount; deposited += amount
+→ resolveCycleSuccess() if deposited now >= deadline (skips remaining attempts!)
+→ resolveCycleFailure() if that drained wallet to 0 without meeting the deadline
+```
+
+**Why this matters for balance:** depositing early banks interest across the rest of
+the cycle's cashouts, but locks cash away from betting and can end the cycle before
+all 3 attempts are used (forgoing extra tickets/earnings). Deferring deposits keeps
+max betting flexibility but earns zero interest that cycle. Both are valid strategies
+— `scripts/sim.mjs` models both and takes whichever wins per run, same as a real player would.
+
+---
+
+## Meta-Progression / Skill Tree (src/meta.ts)
+
+Persists **across runs** in `localStorage` (key `explodds_meta`), completely
+independent of `GameState`/seed — a run's `state.skills` is a one-time snapshot
+taken in `createInitialState()` via `loadMeta().skills`; gameplay always reads
+that snapshot, never `localStorage` directly (same pattern as relics/events
+living in run state instead of being re-derived mid-run).
+
+```typescript
+// src/meta.ts
+interface MetaProgress { prestige_points: number; skills: Record<SkillId, number>; }
+
+SKILLS: SkillDef[]  // catalog — id, name, emoji, levels[] (each with cost to reach it)
+loadMeta() / saveMeta(meta)     // localStorage read/write
+calcPrestigeEarned(cyclesSurvived) = Math.ceil(cyclesSurvived / 2)
+awardPrestige(cyclesSurvived)   // called once per run end, persists the award
+upgradeSkill(id)                // spends prestige_points, bumps skills[id], persists
+```
+
+**Currency**: prestige points, earned once per run when it ends (Game Over —
+`App.tsx` awards it in a `useEffect` keyed on `phase === 'GAME_OVER'`, guarded by
+a `useRef` so it can't double-fire). Spent on the **Start Screen** via the
+🌳 SKILLS button → `SkillTree.tsx` overlay (reads/writes `meta.ts` directly, no
+GameState involvement at all).
+
+**First skill: Cascade Sense** (`SkillId = 'cascade'`, 3 levels) gates how far
+the minesweeper flood-fill (`floodFillReveal` in gameLogic.ts) can chain:
+- **Level 0 (new-player default)** — `handleTileClick`'s empty-tile branch skips
+  `floodFillReveal` entirely and reveals only the clicked tile. No chain at all.
+- **Level 1** — `floodFillReveal(board, tileIndex, CASCADE_LEVEL1_CAP)` (cap = 6
+  in constants.ts) — chain stops once it's revealed 6 tiles.
+- **Level 2 (mastered)** — `floodFillReveal(board, tileIndex)` with no cap
+  (`Infinity`), today's original unlimited cascade.
+
+**Adding skill #2+**: append to `SKILLS` in meta.ts (id, name, emoji, per-level
+name/description/cost), add the id to the `SkillId` union in types.ts, add it to
+`defaultMeta().skills` in meta.ts, then hook `state.skills[id]` into whichever
+gameLogic function the skill should affect — same shape as skill #1.
+
+**Debug**: DebugPanel's SKILLS section directly patches `state.skills` for
+testing THIS run only — it does not touch `localStorage`/prestige at all. Real
+progression only ever happens via the Start Screen's SkillTree.
 
 ---
 
@@ -155,24 +333,44 @@ SHOP → [START CYCLE N+1] → EVENT_CARD
 
 ```typescript
 // Deadlines
-cycle 1–5: [100, 180, 290, 430, 600]
-cycle 6+:  Math.round(prev * 1.35 / 10) * 10
+cycle 1–5: [80, 140, 190, 280, 400]
+cycle 6+:  Math.round(prev * 1.30 / 10) * 10
+Inflator boss: deadline × 1.25 (applied in startNextCycle)
 
-// Base bombs per cycle
-cycles 1-2: 3 | 3-4: 5 | 5-6: 7 | 7+: 9
+// Min bet — RISES EVERY CYCLE, not flat
+minBet = MIN_BET_BASE(10) + cycle_number × MIN_BET_PER_CYCLE(2)
+Greed Mode event: max(minBet, GREED_MODE_MIN_BET=25)
 
-// Dynamic bomb count (from bet)
+// Base bombs per cycle (cycle 2 gentled from 3→2 after playtest feedback that
+// the cycle 1→2 jump felt too steep this early)
+cycle 1-2: 2 | 3-4: 4 | 5-6: 6 | 7+: min(9 + floor((cycle-7)/2), 14)
+
+// Dynamic bomb count (from bet) — see effectiveBombs() in gameLogic
 bombs = base + floor((bet / wallet) × 5), capped at base + 5, max 24
 +3 extra if Danger Pay event active
+−2 if High Roller relic and bet ≥ 50% of wallet
 
-// Tile cash
-baseCash = 3 + (bet / 20)
+// Tile cash (proportional to bet so bankroll can compound vs exponential deadlines)
+baseCash = 3 + bet × 0.4
 cash = baseCash × symbolModifier × multiplier
    [× 1.4 if Danger Pay]
    [× 1.5 for star if Star Shower]
 
-// Symbol modifiers
-diamond 1.0 | cherry 0.8 | banana 1.2 | star 1.5 | bell 0.9 | coin 2.0
+// Symbol modifiers (getSymbolMod — takes full state, not just event/relic flags)
+// 5 symbols only — coin was removed (too many symbols for a 5×5 grid; see
+// Common Pitfalls). Lucky Charm relic repointed from "guaranteed coin tile"
+// to "guaranteed diamond tile" as part of the same change.
+diamond 1.0 | cherry 0.8 | banana 1.2 | star 1.5 | bell 0.9
+× BOOST_PAYOUT_MULT (1.25) per matching payout boost stack, multiplicatively
+
+// Symbol weights (getSymbolWeights — drives board generation AND the paytable)
+base weight × 2 if matching event card (cherry_season/banana_bonanza/star_shower)
+× 0.3 if Blightbringer boss picks this symbol; monoculturist zeroes all but 2 symbols
+× BOOST_FREQUENCY_MULT (1.5) per matching frequency boost stack, multiplicatively
+
+// Starting multiplier per attempt (handlePlaceBet)
+start = 1.0 (1.3 with Head Start) + (carry_multiplier − 1) + 0.5 if Mult Vial
+carry_multiplier = 1 + (prev mult − 1) × 0.5 with Momentum Core (cashout AND bust), else 1.0
 
 // Multiplier growth per symbol tile
 gain = 0.08 + (bombs × 0.01)
@@ -183,16 +381,26 @@ streak 5:  +0.2 mult (or +$8 if Hot Hands relic)
 streak 10: +0.5 mult
 streak 15: +$5 flat
 
-// Cashout tickets
-+2 always, +3 bonus if earnings > bet × 1.5
+// Cashout tickets (ALL additive)
++1 complete attempt (cashout OR bust — awarded on bust directly in handleTileClick)
++2 successful cashout specifically (not on bust)
++3 profitable clear (earnings > bet × 1.5)
++2 if Ticket Printer relic
++5 pay deadline in full (resolveCycleSuccess)
++8 beating a boss cycle (resolveCycleSuccess, on top of the +5)
 
-// Cashout modifiers
+// Cashout modifiers (order: greed_mode ×1.3 → taxman ×0.75 → chain_reaction ×1.5 → greed_chip +$3 → interest tick)
 +30% if Greed Mode event
+−25% if Taxman boss (interest tick below is untaxed)
+×1.5 if Chain Reaction relic and 2+ combos triggered this attempt
 +$3 if Greed Chip relic
 
-// Interest bonus (shown in shop)
-if (leftover_after_deadline > deadline × 0.3):
-  bonus = floor(leftover × 0.15)
+// Bust refunds (best single protection applies, in this order)
+Bomb Suit (full bet, once/cycle) > Insurance Ticket (full bet, consumed) > Insurance Policy (30%)
+
+// Safe-click guarantee (baseline rule, not paywalled)
+Click 1 of every attempt can never be a bomb (converts to empty) — no
+information-free instant death. Bombproof Boots relic extends this to click 2.
 ```
 
 ---
@@ -209,10 +417,27 @@ State tracks `combos_triggered: string[]`.
 | Star Power | 3+ stars | +$18 | Star Magnet → $28 |
 | Bell Storm | 4+ bells | streak = 10 | Bell Captain → streak = 20 |
 | Diamond Run | 4+ diamonds | +15% of attempt_earnings | Diamond Dealer → +25% |
-| Coin Jackpot | 2+ coins | +4🎫 | Coin Tycoon → +8🎫, Coin Rush event → +6 |
+| Perfect Clear | every non-bomb tile on the board revealed | +30% of attempt_earnings so far | — (no relic upgrade yet) |
 
 Banana Split retroactive: tracked via `banana_tile_earnings[]`.
 When triggered: `attempt_earnings += sum(banana_tile_earnings) × (mult - 1)`.
+
+Perfect Clear is checked via `isBoardFullyCleared(board)` (gameLogic.ts) —
+`board.every(t => t.type === 'bomb' || t.state === 'revealed' || t.state === 'empty_revealed')`
+— on BOTH the symbol-tile and empty-tile branches of `handleTileClick` (an
+empty tile can just as easily be the one that completes the board). One-shot
+per attempt via `combos_triggered`, same mechanism as the other combos.
+
+Synergist relic hooks every combo block above (see Relics) to push a payout
+`SymbolBoost` for that combo's symbol into `state.boosts` — it does NOT hook
+Perfect Clear (that one isn't tied to a single symbol).
+
+`ComboInfoOverlay` (Grid.tsx, opened via the ⓘ button) represents each combo's
+trigger condition graphically via `MiniPattern` — small mini-tile strips of
+that combo's emoji, not text. Tight/touching tiles (`touching: true`) mean
+"must land in a line/adjacent" (Cherry Rush, Banana Split); spaced tiles
+(`touching: false`) mean "just need this many anywhere on the board" (Star
+Power, Bell Storm, Diamond Run, Coin Jackpot, Perfect Clear).
 
 ---
 
@@ -222,7 +447,8 @@ When triggered: `attempt_earnings += sum(banana_tile_earnings) × (mult - 1)`.
 RNG seed: state.seed + cycle_number × 1000 + attempt_key × 100
 
 1. Count empties:
-   base = round(non-bomb × 0.45)
+   base = round(non-bomb × 0.25)
+   if Glutton boss: +4
    if safe_zone event: -4
    if safe_digger relic: -3
    if empty_eraser consumable: -2
@@ -230,52 +456,203 @@ RNG seed: state.seed + cycle_number × 1000 + attempt_key × 100
 
 2. Build type array: [bomb×n, symbol×m, empty×k]
 3. Shuffle, assign to tiles
-4. Assign symbols via weightedChoice (weights affected by event card)
+4. Assign symbols via weightedChoice (getSymbolWeights — event/boss/boost modified)
 5. Lucky Charm relic: force one coin tile
 6. Scatter Reveal consumable: hint 3 safe tiles (state = 'hinted')
+7. Surveyor relic: one random empty starts fully 'empty_revealed'
+8. Bomb Detector consumable: 2 random bombs → state = 'flagged' (⚠, still clickable)
 ```
 
 ---
 
-## Relics (all 12 — src/constants.ts ALL_RELICS)
+## Relics (22 currently sold, 24 defined — src/constants.ts ALL_RELICS)
 
-| ID | Effect | Cost |
-|----|--------|------|
-| greed_chip | +$3 flat per cashout | 8🎫 |
-| adrenaline_core | Mult grows ×1.2 faster | 10🎫 |
-| cherry_picker | Cherry Rush → $20 | 10🎫 |
-| banana_baron | Banana Split → ×3 | 12🎫 |
-| star_magnet | Star Power → $28 | 8🎫 |
-| bell_captain | Bell Storm → streak 20 | 10🎫 |
-| diamond_dealer | Diamond Run → +25% | 12🎫 |
-| coin_tycoon | Coin Jackpot → +8🎫 | 8🎫 |
-| safe_digger | 3 fewer empties/board | 8🎫 |
-| bomb_suit | First bust/cycle: bet refunded | 15🎫 |
-| hot_hands | Streak 5 bonus: +$8 (not +0.2 mult) | 10🎫 |
-| lucky_charm | 1 guaranteed coin tile/board | 12🎫 |
+Rarity: common (gray) / rare (blue) / legendary (gold) — shown as border colors.
+Head Start and Momentum Core are temporarily pulled from `ALL_RELICS` (starting-mult
+bonus disabled for playtesting) — listed below for reference but not in the shop pool.
 
-Max 6 relics active. Relic reroll costs 2🎫.
+| ID | Effect | Cost | Rarity |
+|----|--------|------|--------|
+| greed_chip | +$3 flat per cashout | 8🎫 | common |
+| adrenaline_core | Mult grows ×1.2 faster | 10🎫 | rare |
+| cherry_picker | Cherry Rush → $20 | 10🎫 | common |
+| banana_baron | Banana Split → ×3 | 12🎫 | rare |
+| star_magnet | Star Power → $28 | 8🎫 | common |
+| bell_captain | Bell Storm → streak 20 | 10🎫 | rare |
+| diamond_dealer | Diamond Run → +25% | 12🎫 | rare |
+| safe_digger | 3 fewer empties/board | 8🎫 | common |
+| bomb_suit | First bust/cycle: bet refunded | 15🎫 | rare |
+| hot_hands | Streak 5 bonus: +$8 (not +0.2 mult) | 10🎫 | common |
+| lucky_charm | 1 guaranteed diamond tile/board | 12🎫 | rare |
+| ticket_printer | +2 extra 🎫 per cashout | 8🎫 | common |
+| haggler | Consumables −30% (getConsumablePrice) | 8🎫 | common |
+| surveyor | 1 empty starts revealed per board | 8🎫 | common |
+| head_start *(not sold)* | Attempts start at ×1.3 mult | 10🎫 | common |
+| compound_chip | +3% interest rate on deposited cash | 12🎫 | rare |
+| momentum_core *(not sold)* | Keep 50% mult progress between attempts | 14🎫 | rare |
+| insurance_policy | Busts refund 30% of bet | 12🎫 | rare |
+| high_roller | Bets ≥ 50% wallet: −2 bombs | 12🎫 | rare |
+| bombproof_boots | Extends the baseline safe-click guarantee to clicks 1 AND 2 | 20🎫 | legendary |
+| synergist | Every combo permanently boosts that symbol's payout ×1.25 (stacks) | 16🎫 | legendary |
+| sixth_sense | Cleared symbol tiles also show their adjacent bomb count | 14🎫 | rare |
+| chain_reaction | 2+ combos in one attempt: cashout earns ×1.5 | 14🎫 | rare |
+| specialist | Packs favor your most-boosted symbol instead of avoiding it | 12🎫 | rare |
+
+Max 6 relics active by default (`state.max_relic_slots`, starts at `MAX_ACTIVE_RELICS`)
+— buyable up the Relic Case shop item, see below. Relic reroll costs 2🎫.
+
+**Combo-crafting trio** (added for build-around-combos strategies): `synergist` hooks
+every combo-trigger block in `handleTileClick` (cherry_rush→cherry, banana_split→banana,
+star_power→star, bell_storm→bell, diamond_run→diamond, coin_jackpot→coin), pushing a
+payout `SymbolBoost` for that symbol straight into `state.boosts` — same stacking
+mechanism as pack-bought boosts, just earned through play instead of bought. `sixth_sense`
+extends the minesweeper deduction layer from empty tiles to symbol tiles (Grid.tsx:
+`adjacentBombs` is computed for `tile.state === 'revealed' && tile.type === 'symbol'`
+too when owned, rendered as a small corner badge in `TileContent`). `chain_reaction`
+is a flat multiplicative reward in `handleCashout`, checked via
+`state.combos_triggered.length >= 2` — inspired by Balatro/CloverPit's "synergy stacking"
+design (see Design Notes in ROADMAP.md).
 
 ---
 
-## Consumables (src/constants.ts ALL_CONSUMABLES)
+## Bosses (every 3rd cycle — src/constants.ts BOSSES, 9 total)
+
+Selection: `getBossForCycle(seed, cycle)` — seeded shuffle of the pool, indexed by
+boss ordinal, repeats after all 9. `state.active_boss` set in `startNextCycle`.
+Boss cycles have NO event card. Beating one: +8🎫 (BOSS_REWARD_TICKETS).
+
+| ID | Rule | Hook |
+|----|------|------|
+| monoculturist | Only 2 symbol types spawn (seeded pair) | getSymbolWeights |
+| saboteur | Every 4th symbol cleared arms a new bomb | handleTileClick |
+| blackout | Empty tiles show no adjacency numbers | Grid.tsx render |
+| taxman | 25% tax on every cashout | handleCashout |
+| glutton | +4 empty tiles per board | generateBoard |
+| short_fuse | Only 2 attempts this cycle | startNextCycle |
+| warden | Bet locked to 25% of wallet (getLockedBet) | reducer + LeftPanel |
+| inflator | Deadline +25%, interest rate ×2 if beaten | startNextCycle + interestRate |
+| blightbringer | One random symbol nerfed to 30% weight | getSymbolWeights |
+
+---
+
+## Packs & Symbol Boosts (src/constants.ts, gameLogic.ts)
+
+Permanent, stacking, symbol-targeted build layer — bought with **cash** (not tickets),
+separate from relics. Two axes (`frequency`: weight ×1.5/stack, `payout`: modifier
+×1.25/stack, both multiplicative per stack) plus a rarer "themed" kind that bundles both.
+
+**3 unified shop slots, not an infinite-buy button.** Each shop visit offers exactly
+`PACK_SLOT_COUNT (3)` slots (`state.shop_packs: ShopPackSlot[]`, same sold/reroll
+pattern as consumables/relics) — each slot's `kind` is rolled independently via
+`PACK_KIND_WEIGHTS` (40% frequency / 40% payout / 20% themed). `frequency`/`payout`
+slots also roll a `huge` variant (`HUGE_PACK_CHANCE` 20%): 5 reveal choices instead
+of 3 (`HUGE_PACK_CHOICE_COUNT`), priced ×`HUGE_PACK_PRICE_MULT` (1.8). Buying a slot
+marks it `sold`; getting more requires a reroll (2🎫, `REROLL_PACKS`, regenerates all 3).
+
+```
+getPackPrice(state)                       = PACK_BASE_PRICE(18) + packs_opened × PACK_PRICE_STEP(4)
+generatePackSlots(state)                  = PACK_SLOT_COUNT(3) ShopPackSlot, each independently
+                                             rolled kind + (axis-only) huge chance
+generatePackChoices(state, axis, count=3) = `count` DISTINCT-symbol candidates of the given
+                                             axis, weighted AWAY from already-stacked symbols
+                                             (or toward the Specialist leader — see below)
+buyPack(state, index)                     → themed: grants BOTH stacks on the slot's fixed
+                                             symbol directly (no reveal); frequency/payout:
+                                             sets pending_pack_choices (3 or 5, per `huge`) and
+                                             pending_pack_picks_remaining (1 normal, 2 huge)
+pickPackBoost(state, boost)               → append to boosts[], remove that choice from
+                                             pending_pack_choices, decrement picks_remaining;
+                                             only clears to null once picks_remaining hits 0
+rerollPacks(state)                        → fresh 3 slots at the current price (doesn't discount)
+```
+
+Huge packs let the player pick **2** of the 5 revealed choices, not just 1 — the
+reveal stays open (with the already-picked choice removed) until
+`pending_pack_picks_remaining` reaches 0. Normal (non-huge) packs still pick 1 of 3.
+
+Handled entirely inside `Shop.tsx` as local reveal state (`pending_pack_choices` set
+→ render a reveal instead of the normal shop sections) — **no new GamePhase**.
+`NEXT_CYCLE` is disabled while a pack choice is pending (forces a pick before leaving).
+`BUY_PACK` now takes a slot `index`, not an `axis` — kinds can repeat across the 3
+slots (e.g. two `payout` slots in one visit), so axis alone no longer uniquely IDs a slot.
+
+**Tooltip/label wording**: always show an explicit multiplier (`×1.5`, `×1.25`) or a
+before→after pair, never a bare `+50%` — on a stat that's ALREADY a percentage (odds),
+"+50%" reads as "+50 percentage points" to most players, which is wildly different
+from the actual multiplicative change. See `Paytable.tsx`'s tooltip construction.
+
+**Boss synergy:** Blightbringer nerfs a symbol regardless of investment — a build
+leaning hard into one symbol is genuinely at risk from it (Balatro-style "your build
+has a weakness" tension).
+
+**Themed packs** — one of the 3 pack slots, fixed to a random symbol
+(`PACK_THEMES` in constants.ts: Rich=diamond, Sweet=cherry, Ripe=banana,
+Bright=star, Chime=bell — 5 themes, one per symbol, since coin was removed).
+Unlike frequency/payout slots, there's **no reveal step**
+— buying grants BOTH a frequency AND a payout stack on the fixed symbol immediately,
+priced at `getPackPrice(state) × THEMED_PACK_PRICE_MULT (2.2)` since it bundles 2
+guaranteed stacks instead of a gamble. Shares the `packs_opened` price-scaling counter
+with the axis packs. It's a random roll among the 3 slots each visit (not a dedicated
+section) — reroll the whole shop if you want a different symbol's theme.
+
+**Specialist relic** biases pack generation the opposite way from the default:
+`getLeaderSymbol(state)` finds the symbol with the most combined boost stacks (both
+axes); with Specialist owned, `generatePackChoices` and the themed-pack symbol roll
+both weight that leader symbol way up instead of anti-weighting it down, letting a
+player double down on one symbol instead of naturally spreading across several.
+
+---
+
+## Relic Slots (src/gameLogic.ts, constants.ts)
+
+`state.max_relic_slots` (starts at `MAX_ACTIVE_RELICS = 6`) replaces the constant
+everywhere the relic-shelf cap is checked (`BUY_RELIC` reducer case, `Shop.tsx`
+`relicsFull`, `RelicShelf.tsx` slot count) — **don't reintroduce a hardcoded
+`MAX_ACTIVE_RELICS` check**, always read `state.max_relic_slots`.
+
+**Relic Case** is a one-shot ticket purchase (`state.shop_relic_case: ShopRelicCaseItem
+| null`), NOT a relic itself — it's consumed on purchase (`buyRelicCase`) rather than
+occupying a shelf slot, and permanently raises `max_relic_slots` by 1. Price scales
+with `state.relic_cases_bought` (`RELIC_CASE_BASE_PRICE(16) + bought × RELIC_CASE_PRICE_STEP(6)`),
+capped at `MAX_ACTIVE_RELICS + MAX_BONUS_RELIC_SLOTS` (9 total) — past that,
+`generateRelicCaseSlot` returns `null` and the shop section doesn't render. No reroll
+(nothing to reroll into — it's a single fixed item).
+
+---
+
+## Consumables (8 currently sold — src/constants.ts ALL_CONSUMABLES)
+
+Mult Vial is temporarily pulled from the pool (starting-mult bonus disabled).
 
 | ID | Price | When applied | Effect |
 |----|-------|-------------|--------|
 | scatter_reveal | $15 | Board generation | Hint 3 safe tiles |
 | scanner | $20 | CLEARING (button) | Reveal row or col |
 | defuser | $25 | PLACEMENT phase | Bomb on tile → becomes empty |
-| tile_magnet | $18 | CLEARING (passive) | Auto-hint nearest safe every 5 clears |
+| tile_magnet | $18 | CLEARING (passive) | Auto-hint nearest safe every 5 clears; consumed at attempt end |
 | lucky_tile | $12 | PLACEMENT phase | +$5 when placed tile cleared |
 | empty_eraser | $10 | Board generation | -2 empty tiles |
+| bomb_detector | $22 | Board generation | Marks 2 bombs 'flagged' (⚠, still clickable) |
+| insurance_ticket | $15 | On bust (passive) | Refunds the bet, consumed |
+| mult_vial *(not sold)* | $20 | Board generation | Next attempt starts +0.5 mult |
 
-scatter_reveal and empty_eraser are auto-consumed at board generation (removed from inventory).
-defuser and lucky_tile trigger PLACEMENT phase before board is clickable.
-scanner: button in left panel → pick row/col → click tile.
+scatter_reveal, empty_eraser, bomb_detector and mult_vial are auto-consumed at board
+generation (one copy each, removed in handlePlaceBet). insurance_ticket is consumed
+by the next bust. defuser and lucky_tile trigger PLACEMENT phase before board is
+clickable. scanner: button in left panel → pick row/col → click tile.
+Haggler relic discounts all shop consumable prices 30% (getConsumablePrice).
+
+Distinct from **packs**: consumables are single-use/per-board and bought repeatedly;
+packs are permanent, one boost kept forever, price scales with how many you've bought.
 
 ---
 
-## Event Cards (10 pool, 3 shown per cycle)
+## Event Cards (10 pool, 3 shown per cycle — STACK PERMANENTLY)
+
+Unlike relics/consumables, event-card picks are never lost or replaced — every pick
+across the whole run stays in `active_events` forever. `drawEventCards` excludes
+already-active modifiers from the draw pool (falls back to the full pool once
+they're all collected), so a run naturally diversifies instead of re-offering owned ones.
 
 | ID | Effect |
 |----|--------|
@@ -283,43 +660,76 @@ scanner: button in left panel → pick row/col → click tile.
 | cherry_season | Cherry weight ×2 |
 | banana_bonanza | Banana weight ×2 |
 | star_shower | Star modifier ×1.5 (1.5 → 2.25) |
-| coin_rush | Coin weight ×2; Coin Jackpot → +6🎫 |
 | safe_zone | -4 empty tiles |
 | danger_pay | +3 bombs; tile value ×1.4 |
 | bell_ringer | Bell Storm threshold: 4 → 3 bells |
 | lucky_board | First attempt this cycle: no empty tiles |
-| greed_mode | Cashout ×1.3; min bet $25 |
+| greed_mode | Cashout ×1.3; min bet floors at $25 |
 
 ---
 
 ## UI Layout
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ EXPLODDS                          💵 $XXX   🎫 XX   │
-├──────────────┬──────────────────────┬────────────────┤
-│ LEFT (w-48)  │   CENTER (flex-1)    │ RIGHT (w-48)   │
-│              │                      │                │
-│ BET AMOUNT   │ [EventBanner]        │ CYCLE X        │
-│ $XX          │   (phase=EVENT_CARD) │ DEADLINE $XXX  │
-│ [slider]     │                      │ DEPOSITED $XXX │
-│              │ [ComboOverlay]       │ OWED $XXX      │
-│ 💣 Bombs: X  │  (absolute, z-10)    │ ──────────     │
-│ 💵/tile: $X  │                      │ MULT ×X.X      │
-│              │  5×5 Grid            │ 🔥 STREAK X    │
-│ [PLACE BET]  │  + bust flash        │ ──────────     │
-│              │  overlay             │ ATTEMPTS       │
-│  ── or ──    │                      │ ● ● ○  (2/3)   │
-│              │ 💣 X · X safe · X   │ ──────────     │
-│ [CASHOUT]    │  empty    [ⓘ]        │ RELICS         │
-│ +$XX.XX      │                      │ [emoji icons]  │
-└──────────────┴──────────────────────┴────────────────┘
+Top bar (full width): EXPLODDS · [🛠 debug (DEV only)] [🔊 mute]
 
-Overlays (absolute, z-20+):
-  PLACEMENT  — black/80 backdrop + ConsumablePlacement card
-  SHOP       — bottom-sheet, slides up from bottom
-  GAME_OVER  — full overlay, black/88 backdrop
+Centered table (max-w-5xl, vertically centered, floating casino-panel cards):
+┌────────────────┐  ┌────────────────────┐  ┌──────────────────┐
+│ Paytable (top) │  │ [CycleHeader]      │  │ RIGHT w-64 (HUD) │
+│ live odds+$    │  │ cycle + BOSS IN n  │  │ MULT + streak    │
+├────────────────┤  ├────────────────────┤  │  (topmost card)  │
+│ 💵 wallet      │  │  [ComboOverlay]    │  │ [boss rule card] │
+│ 🎫 tickets     │  │  5×5 Grid          │  │ attempts 💣💣💣  │
+│ 💳 deadline    │  │  (max-w-[30rem])   │  │ modifier chips   │
+│  + progress    │  │  + bust flash      │  │ (active_events)  │
+│  + interest %  │  │  💣 X · safe · [ⓘ]│  │                  │
+│  + DEPOSIT     │  │                    │  │                  │
+│   $ preset btns│  │  [RelicShelf]      │  │                  │
+│  + CONFIRM btn │  │  (under grid,      │  │                  │
+│ bet card       │  │   full width)      │  │                  │
+│ PLACE BET/     │  │                    │  │                  │
+│  CASHOUT       │  │                    │  │                  │
+│ scanner/items  │  │                    │  │                  │
+└────────────────┘  └────────────────────┘  └──────────────────┘
+
+Deposit is pick-then-confirm: three $ preset buttons (25%/50%/max of what's
+depositable, no slider) only set a local `depositAmount` (LeftPanel state), a
+separate CONFIRM DEPOSIT button actually dispatches DEPOSIT. The current
+effective interestRate(state) is shown right below the deposited/deadline row
+whenever the deadline isn't fully covered yet.
+
+Overlays (absolute, .overlay-in fade):
+  EVENT_CARD — EventChoice full-screen untimed 3-card pick (z-30)
+  BOSS_INTRO — BossIntro full-screen red reveal + FACE THE BOSS (z-30)
+  PLACEMENT  — black/80 backdrop + ConsumablePlacement card (z-20)
+  RESULTS    — ResultsOverlay full-screen (z-30): wallet/ticket stat cards (top,
+               start at before-values) → center "TOTAL WON" count-up → itemized
+               cash/ticket line list → CONTINUE (dispatches DISMISS_RESULTS).
+               Winnings "fly" (.fly-to-card CSS animation) into the stat cards,
+               which pulse (.stat-card-pulse) and swap to their after-values.
+  SHOP       — centered modal (max-w-2xl): 👁 ODDS toggle (inline Paytable reuse,
+               for checking odds/payouts before buying packs) → consumables (3)
+               → packs (3 unified slots) → relics (3, Relic Case appended in the
+               same section, not its own row) → next-boss preview footer.
+               Pack-opening reveal replaces the packs section in-place while
+               pending_pack_choices is set (z-30)
+  GAME_OVER  — full overlay, black/88 backdrop (z-40). If the run ended on a
+               bust (state.board still populated — a cashout-based failure
+               already cleared it), shows a small non-interactive FinalBoard
+               reveal of every tile's true content, classic-minesweeper-loss
+               style, above the run stats. Also shows prestige earned this run
+               (calcPrestigeEarned, display-only — the actual award already
+               happened in App.tsx's useEffect)
+  SkillTree  — Start-screen-only overlay (z-30), toggled by local App.tsx state
+               (not a GamePhase — reads/writes src/meta.ts directly)
+  DebugPanel — right-side drawer, z-50, DEV builds only (import.meta.env.DEV)
 ```
+
+Post-bust reveal (inside the Grid, not a separate overlay component): once
+`bustRevealReady` flips true (~700ms into BUST_FLASH), `Grid`'s `revealAll` prop
+makes every still-hidden tile render its true content at reduced opacity (same
+visual language as `GameOver`'s `FinalBoard`), and `LeftPanel` swaps its
+CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 
 ---
 
@@ -328,38 +738,217 @@ Overlays (absolute, z-20+):
 | Action | When | Effect |
 |--------|------|--------|
 | START_GAME | Start screen click | createInitialState + draw event cards → EVENT_CARD |
-| SELECT_EVENT_CARD | Banner click | active_event set → BET |
-| AUTO_SELECT_EVENT | 8s timeout | random pick from options → BET |
-| SET_BET | Slider move | clamp to [minBet, wallet], snap to $5 |
+| SELECT_EVENT_CARD | EventChoice card click | **appends** to active_events → toBetPhase (untimed — no auto-select) |
+| CONFIRM_BOSS | BossIntro button | BOSS_INTRO → toBetPhase |
+| SET_BET | Slider move | clamp to [minBet, wallet], snap to $5; ignored under Warden |
 | PLACE_BET | Button click | wallet -= bet, generate board → PLACEMENT or CLEARING |
+| DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — may end the cycle immediately |
 | PLACE_CONSUMABLE | Tile click in PLACEMENT | assign consumable to tile |
 | SKIP_PLACEMENT | Button | skip remaining placements → CLEARING |
 | TILE_CLICK | Grid click | handleTileClick (symbol/empty/bomb logic) |
 | ACTIVATE_SCANNER | Button | set pending_scanner_axis |
-| CASHOUT | Button | handleCashout → BET or endCycleCheck |
-| BUST_FLASH_END | 1.2s useEffect | → BET or endCycleCheck |
+| CASHOUT | Button | handleCashout → phase RESULTS; computed toBetPhase/settleFinalAttempt result stashed in pending_next_phase |
+| DISMISS_RESULTS | ResultsOverlay CONTINUE | dismissResults — applies pending_next_phase, clears pending_results |
+| BUST_FLASH_END | CONTINUE button (after ~700ms reveal) | → toBetPhase or settleFinalAttempt |
 | CLEAR_COMBO_DISPLAY | 2.5s useEffect | clear active_combo_display |
-| BUY_CONSUMABLE | Shop | wallet -= price, add to owned |
+| BUY_CONSUMABLE | Shop | wallet -= price (Haggler discount), add to owned |
 | BUY_RELIC | Shop | tickets -= cost, add to relics |
+| BUY_PACK | Shop | buyPack(state, index) — index into shop_packs (3 slots, kinds can repeat); themed grants both stacks directly, axis sets pending_pack_choices |
+| PICK_PACK_BOOST | Shop reveal card click | pickPackBoost — appends to boosts[] |
+| BUY_RELIC_CASE | Shop | buyRelicCase — tickets -= price, max_relic_slots += 1 |
 | REROLL_CONSUMABLES | Shop | tickets -= 2, new consumable list |
 | REROLL_RELICS | Shop | tickets -= 2, new relic list |
-| NEXT_CYCLE | Shop button | startNextCycle → EVENT_CARD |
+| REROLL_PACKS | Shop | tickets -= 2, new shop_packs (3 fresh slots, kinds re-rolled) |
+| NEXT_CYCLE | Shop button | startNextCycle → EVENT_CARD or BOSS_INTRO (no-op while a pack pick is pending) |
 | RESTART | Game over | createInitialState → START |
+| DEBUG_PATCH | DebugPanel (DEV only) | `{ ...state, ...patch }` — direct state override for testing |
 
 ---
 
 ## Common Pitfalls
 
+- **Deposit is pick-then-confirm**, not one-click. `LeftPanel` holds `depositAmount`
+  as local component state (three $ quick-set buttons, no slider — only adjust it),
+  and a separate CONFIRM DEPOSIT button dispatches the actual `DEPOSIT` action.
+  Resets to `depositCap` via a `useEffect` keyed on `depositCap` changing (new
+  attempt/cycle).
+- **`getSymbolOdds`'s payout column is deliberately pinned to `mult = 1.0`**, not
+  `state.multiplier`. It's an "upgrade level" readout (what a boost/relic/event
+  is doing to a symbol's base value) — if it used the live attempt multiplier,
+  every row would visibly climb as the player clears tiles, reading as paytable
+  instability instead of permanent build state. Don't reintroduce `state.multiplier`
+  there; `pct` (odds) is unaffected since weights don't depend on mult anyway.
+- **Two classes sharing the `animation` CSS property on one element will "unmask"
+  each other.** `.tile-entrance` (plays once at deal-time) stayed on every tile
+  permanently; `.tile-reveal` (`!important`) is added only during a click's 520ms
+  animation window. While both are present, `tile-reveal` wins the cascade — but
+  when React removes the `tile-reveal` class afterward, the browser treats
+  `tile-entrance`'s now-unmasked `animation` declaration as freshly applied and
+  **restarts it from scratch**, producing a second, unwanted pop-in right after the
+  real reveal. This is the actual root cause of the "reveal → disappear → bop
+  again" bug (confirmed by testing: disabling `.tile-entrance`'s animation fixes
+  it) — `.tile-entrance` is now `animation: none`. Also removed `icon-pop`'s 100ms
+  delay (a separate, smaller desync) while investigating. **Lesson**: never let two
+  classes on the same element both set `animation` unless you want the
+  cascade-losing one to replay when the winning one's class is removed.
 - **Bet deducted at PLACE BET**, not at cashout/bust. Bust = bet is already gone.
 - `attempt_earnings` is NOT in wallet until CASHOUT. Don't add it to wallet display.
-- `deposited` resets to 0 each cycle (reset in `startNextCycle`).
+- **`wallet` and `deposited` are separate pools.** Deposited money can never be bet
+  again. The deadline check is `deposited >= deadline`, NOT `wallet >= deadline` —
+  that changed this session. Don't reintroduce the old wallet-based check.
+- `deposited` resets to 0 each cycle (reset in `startNextCycle`). `active_events`
+  does NOT reset — it's permanent for the whole run. Don't confuse the two.
+- **Any wallet-shrinking action must re-clamp `current_bet`, not just SET_BET.**
+  `handleDeposit` used to leave `current_bet` untouched — if you set a big bet, then
+  deposited enough to shrink wallet below it, `current_bet` stayed stale and
+  `handlePlaceBet` silently no-op'd (`newWallet < 0 → return state`), which looked
+  to the player like "PLACE BET is enabled but does nothing" despite having enough
+  money. Fixed via `clampBetToWallet()`, called at the end of `handleDeposit`. If you
+  add another action that can reduce `wallet` outside of betting/SET_BET, clamp
+  `current_bet` there too.
+- Interest fires **only on a successful cashout**, never on bust, proportional to
+  whatever's already in `deposited` at that moment (not this attempt's earnings).
 - `bomb_suit_used` resets each cycle. `safetyNetUsed` was removed (old system).
-- Empty tiles break streak and give no cash — they're not bombs, just dead tiles.
+- Empty tiles break streak and give no cash — but they show the adjacent-bomb count
+  (see `adjacentBombCount` in gameLogic.ts; rendered in Grid.tsx `TileContent`).
+- **The only real dead end is `wallet <= 0 && deposited < deadline`** (`toBetPhase`).
+  A wallet below min-bet but above $0 is legal — the player can still deposit it.
+  Don't reintroduce a min-bet-based game over check.
+- `settleFinalAttempt` auto-sweeps leftover wallet into deposited when attempts hit
+  0, before judging success/failure — don't skip this or players get punished for
+  simply not clicking deposit on their last attempt.
 - Combo checks run after every symbol tile. They must check already-revealed tiles in `board`, not just the current tile.
 - Banana Split retroactive: uses `banana_tile_earnings[]` (list of cash each banana earned). On trigger: add `sum × (mult - 1)`.
+- Bell Storm grants the crossed streak milestones (5/10/15) **immediately** and sets
+  their given-flags — the next click must not pay them again.
 - Scanner removes itself from `consumables_owned` via `removeOne()` after use.
-- `scatter_reveal` and `empty_eraser` are consumed at board gen (removed in `handlePlaceBet`).
+- `scatter_reveal`, `empty_eraser`, `bomb_detector`, `mult_vial` are consumed at board gen
+  (`removeOne` in `handlePlaceBet` — one copy each, duplicates survive). `tile_magnet` is
+  consumed at attempt end (cashout or bust). `insurance_ticket` is consumed on the next bust.
 - Lucky Board: only applies to first attempt per cycle. `lucky_board_used` tracks this.
+- **Boss cycles have no event card** — `event_card_options` is empty. `active_boss`
+  is only set/cleared in `startNextCycle`.
+- Saboteur converts a hidden tile to a bomb mid-attempt — already-shown adjacency
+  numbers update live (they're computed from `board` at render). Intended.
+- The bet under Warden is enforced in `handlePlaceBet` via `getLockedBet` — the
+  reducer's SET_BET also ignores input, but never trust `current_bet` alone.
+- `getSymbolWeights`/`getSymbolMod` now take the full `state` (not individual flags)
+  since they need active_events, active_boss, AND boosts. Both are exported and
+  reused by `getSymbolOdds` (the paytable) — keep them pure and side-effect-free.
+- Packs have their own local UI state (`pending_pack_choices`) but it lives in
+  global GameState, not component state — so it survives re-renders and the reveal
+  can't be dismissed without picking. `NEXT_CYCLE` must stay disabled while it's set.
+- Sounds are played by the `useSounds` hook in App.tsx, which diffs consecutive
+  states — the reducer must stay pure. New audible moments need a diff rule there.
+- When tuning any economy formula, mirror the change in `scripts/sim.mjs` PARAMS and run `npm run sim`.
+- **Sixth Sense's bomb-count badge only appears on tiles actually clicked/revealed
+  this attempt** (`tile.state === 'revealed'`) — it is NOT the same thing as the
+  DebugPanel's "REVEAL BOARD" ghost overlay, which peeks every hidden tile's true
+  content without touching game state at all. Toggling Sixth Sense on and then
+  looking at a ghost-revealed (still-hidden) board will show nothing, correctly —
+  that's not a bug, the two features are unrelated. `DebugGhost` does separately
+  show adjacency numbers on its own peek overlay (for testing convenience), but
+  that's independent of whether Sixth Sense is owned.
+- `MAX_SHOP_ITEMS` is now **3** (was 5) — governs both `shop_consumables` and
+  `shop_relics` pool sizes. Packs use their own `PACK_SLOT_COUNT` (3), not this
+  constant.
+- Perfect Clear must be checked on BOTH the symbol-tile and empty-tile branches
+  of `handleTileClick` — the tile that completes the board isn't always a symbol.
+- **Flood fill only expands through further 0-adjacency EMPTY tiles** (`floodFillReveal`).
+  A symbol tile or a numbered (>0 adjacency) empty tile caught in the cascade gets
+  revealed (and, if it's a symbol, paid out via `applySymbolTileReveal`) but does NOT
+  itself propagate the cascade further — same rule real minesweeper uses. Combo checks
+  and Perfect Clear run ONCE per click via `resolveCombosAndFinalize`, after every tile
+  in the cascade has been revealed, not per-tile — they scan the whole board's revealed
+  state so checking once is both correct and sufficient.
+- **Flood fill is gated behind the Cascade Sense meta-skill** (`state.skills.cascade` —
+  see Meta-Progression section). `handleTileClick`'s empty-tile branch checks the level
+  BEFORE calling `floodFillReveal` — level 0 bypasses it completely (`revealSet =
+  [tileIndex]`), level 1 passes `CASCADE_LEVEL1_CAP` as `floodFillReveal`'s new
+  `maxTiles` param, level 2 passes `Infinity`. If you add gameplay that reveals tiles
+  outside `handleTileClick` (a new consumable, say), decide deliberately whether it
+  should also respect the cascade skill or bypass it — don't assume unlimited cascade
+  is still the default, that only holds at skill level 2.
+- The streak resets exactly once for an empty-tile click (cascading or not), even if
+  the flood fill also reveals several symbol tiles — the whole cascade is one atomic
+  player action. Don't reset it again per intermediate empty tile within a single cascade.
+- There are only **5 symbols** now (diamond/cherry/banana/star/bell) — coin was
+  removed for being one too many for a 5×5 grid. This also retired Coin Jackpot combo,
+  the coin_tycoon and golden_goose relics, and the coin_rush event card entirely (no
+  clean repoint existed for any of them). Lucky Charm was repointed from "guaranteed
+  coin tile" to "guaranteed diamond tile" instead of being retired, since its effect
+  (force one tile of a specific symbol) still made sense pointed at a different symbol.
+  If you ever reintroduce a 6th symbol, mirror the change in `scripts/sim.mjs`'s
+  `avgSymbolMod` (weighted mean of symbol modifiers) or the sim's EV numbers will be wrong.
+- **Smoke-test bundles must be rebundled from source before every verification run** —
+  this session briefly had `smoke.mjs`/`smoke2.mjs`/`smoke3.mjs` pointed at stale,
+  never-rebuilt esbuild bundles (`gl.mjs`/`gl2.mjs`/`gl3.mjs`) from early in the session,
+  while `smoke4.mjs`/`smoke5.mjs` correctly used a shared `gameLogic.bundle.mjs` that
+  WAS kept in sync. The stale suites kept reporting "0 failed" against code that no
+  longer existed (e.g. a whole "Coin Jackpot" test still passing after the combo was
+  deleted) — a false-negative that would have gone unnoticed without manually
+  double-checking *what* each suite actually imports. All smoke suites now import the
+  same `gameLogic.bundle.mjs`; regenerate that one file with esbuild before trusting
+  any suite's results, and if you add a new suite, point it at the same bundle rather
+  than creating another one to keep in sync.
+- **`handleCashout` no longer transitions phase directly** — it computes the same
+  `toBetPhase`/`settleFinalAttempt` result it always did (so wallet, tickets, shop
+  generation on cycle-complete, etc. are all already resolved), but returns with
+  `phase: 'RESULTS'` and stashes the real target phase in `pending_next_phase`. Only
+  `dismissResults` (via `DISMISS_RESULTS`) actually applies it. If you add a new
+  cashout-adjacent effect, compute it into `resolved` before the `RESULTS` override —
+  don't special-case around the deferred phase.
+- **Meta-progression (`src/meta.ts`) is a separate persistence layer from GameState.**
+  `state.skills` is a read-once snapshot taken at `createInitialState()` — mutating
+  `state.skills` mid-run (e.g. via `DEBUG_PATCH`) is a this-run-only override and does
+  NOT write back to `localStorage`. The only writers of `localStorage` are
+  `awardPrestige` (Game Over) and `upgradeSkill` (SkillTree). Don't call `loadMeta()`
+  again mid-run expecting fresh data — always read `state.skills`.
+- **`awardPrestige` must fire exactly once per run.** App.tsx guards it with a
+  `useRef` (`prestigeAwarded`) reset whenever `phase !== 'GAME_OVER'` — without the
+  guard, React re-running the effect (e.g. Strict Mode, or any other state change
+  while still in GAME_OVER) would double-award prestige points.
+
+---
+
+## Sound
+
+`src/sound.ts` loads `public/sfx/<name>.wav` lazily and clones nodes so rapid
+repeats overlap. Names: reveal, symbol, empty, bomb, cashout, combo, milestone,
+buy, boss, click, gameover. `symbol` is pitch-shifted with streak via playbackRate.
+Mute persists in localStorage (`explodds_muted`), toggle in the top bar.
+`npm run sfx` regenerates the synthesized placeholders — replacing a file in
+public/sfx/ with a licensed one of the same name needs no code change.
+
+---
+
+## Debug Console (src/components/DebugPanel.tsx)
+
+Dev-only testing tool — 🛠 button in the top bar, gated behind `import.meta.env.DEV`
+(never renders in a production build). Opens a right-side drawer with direct state
+pokes, all routed through a single generic reducer case:
+
+```typescript
+{ type: 'DEBUG_PATCH'; patch: Partial<GameState> }  →  { ...state, ...action.patch }
+```
+
+Sections: economy (wallet/tickets), cycle (number/deadline/deposited), attempt
+(mult/streak/attempts left), board (bomb count override for the **next** board dealt
+— `state.debug_bomb_override`, consumed in `handlePlaceBet` — plus a reveal-board
+ghost view), boss (force `active_boss` to any of the 9), modifiers (toggle any
+`active_events` entry), relics (toggle ownership of any of the 22), consumables
+(stack any of the 9), symbol boosts (add a frequency/payout stack per symbol).
+
+**Reveal-board ghost view** (`debugReveal` state in `App.tsx`, passed to `Grid` →
+`GridTile` → `DebugGhost`) is purely visual — a faint dashed overlay showing each
+hidden tile's true bomb/symbol, `pointer-events: none` so clicks pass through to the
+real button underneath. It never touches `Tile.state`, so it can't desync from real
+gameplay.
+
+**`debug_bomb_override`** also feeds the LeftPanel's pre-bet bomb preview (so the
+displayed number matches what will actually be dealt) — remember to check both call
+sites (`handlePlaceBet` and the preview calc in `App.tsx`) if you add more overrides
+that should be previewed before betting.
 
 ---
 
@@ -380,13 +969,33 @@ Overlays (absolute, z-20+):
 **New event card:**
 1. Add ID to `EventCardId` union in `types.ts`
 2. Add entry to `EVENT_CARDS` in `constants.ts`
-3. Hook effect into `generateBoard`, `handleTileClick`, or `handleCashout`
+3. Hook effect into `getSymbolWeights`, `generateBoard`, `getSymbolMod`, `handleTileClick`, or `handleCashout` — check via `state.active_events.includes(...)`
+4. Remember it stacks permanently — don't design an effect that breaks if picked twice (either make it idempotent, or accept it as a "collect them all" run milestone)
+
+**New boss:**
+1. Add ID to `BossId` union in `types.ts`
+2. Add entry to `BOSSES` in `constants.ts` — pool size changes automatically flow through `getBossForCycle`
+3. Hook effect into the relevant gameLogic function, checking `state.active_boss === '...'`
 
 **New combo:**
 1. Add check in `handleTileClick` after the symbol tile block
 2. Add to `combos_triggered` array (string key) to prevent re-triggering
 3. Push to `active_combo_display` for overlay
 4. Update ⓘ info overlay in `Grid.tsx` `ComboInfoOverlay`
+
+**New pack boost axis** (currently only frequency/payout):
+1. Add to `BoostAxis` union in `types.ts`
+2. Apply the multiplier in `getSymbolWeights` (frequency-like) or `getSymbolMod` (payout-like), or wherever the new axis should hook
+3. Add its label to the reveal card in `Shop.tsx`
+
+**New meta-progression skill** (cross-run, spent via prestige points):
+1. Add ID to `SkillId` union in `types.ts`
+2. Add entry to `SKILLS` in `meta.ts` (name, emoji, per-level name/description/cost)
+3. Add the id's default level (usually 0) to `defaultMeta().skills` in `meta.ts`
+4. Hook `state.skills[id]` into whichever gameLogic function the skill should
+   affect — `state.skills` is already snapshotted into every run via `createInitialState`
+5. `SkillTree.tsx` and `DebugPanel.tsx`'s SKILLS section both iterate `SKILLS`
+   automatically — no UI changes needed unless the skill needs bespoke display
 
 ---
 
@@ -401,4 +1010,8 @@ Overlays (absolute, z-20+):
 --text-primary, --text-muted, --text-dim
 ```
 
-Key animation classes: `tile-entrance`, `tile-reveal`, `icon-pop`, `combo-pop`, `bust-flash`, `cashout-active`, `streak-full`.
+Key animation classes: `tile-entrance`, `tile-reveal`, `icon-pop`, `combo-pop`, `bust-flash` (now 0.7s,
+was 1.2s), `cashout-active`, `streak-full`, `stat-card-pulse` (ResultsOverlay wallet/ticket card update),
+`fly-to-card` (ResultsOverlay winnings flying into the stat cards, `animation-delay` timed to the count-up).
+Layout classes: `.stat-card`, `.stat-card-boss`, `.progress-track`/`.progress-fill`,
+`.chip`, `.slot`/`.slot-empty`, `.rarity-{common,rare,legendary}`, `.choice-card`, `.card-rise`, `.overlay-in`, `.pip`/`.pip-lit`/`.pip-notch`.

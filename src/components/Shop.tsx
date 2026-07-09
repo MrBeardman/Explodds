@@ -1,175 +1,250 @@
 import { useState } from 'react';
-import type { GameState, ConsumableId, RelicId } from '../types';
+import type { GameState, ConsumableId, RelicId, SymbolBoost } from '../types';
+import { BOSS_MAP, SYMBOL_MAP, PACK_TYPE_INFO, PACK_THEMES, calcDeadline } from '../constants';
+import { getBossForCycle, getConsumablePrice } from '../gameLogic';
+import { Paytable } from './Paytable';
 
 interface Props {
   state: GameState;
   onBuyConsumable: (id: ConsumableId) => void;
   onBuyRelic: (id: RelicId) => void;
+  onBuyPack: (index: number) => void;
+  onPickPackBoost: (boost: SymbolBoost) => void;
+  onSkipPackBoost: () => void;
+  onBuyRelicCase: () => void;
   onRerollConsumables: () => void;
   onRerollRelics: () => void;
+  onRerollPacks: () => void;
   onNextCycle: () => void;
 }
 
 export function Shop({
-  state, onBuyConsumable, onBuyRelic,
-  onRerollConsumables, onRerollRelics, onNextCycle,
+  state, onBuyConsumable, onBuyRelic, onBuyPack, onPickPackBoost, onSkipPackBoost,
+  onBuyRelicCase,
+  onRerollConsumables, onRerollRelics, onRerollPacks, onNextCycle,
 }: Props) {
-  const [tab, setTab] = useState<'consumables' | 'relics'>('consumables');
-
   const nextCycle = state.cycle_number + 1;
-  const owed      = Math.max(0, state.deadline - state.deposited);
-  const paid      = Math.min(state.deposited, state.deadline);
-  // Interest bonus: leftover > 30% of deadline after paying
-  const leftover  = state.wallet;
-  const interestBonus = leftover > state.deadline * 0.3
-    ? Math.floor(leftover * 0.15)
-    : 0;
+  const nextBossId = getBossForCycle(state.seed, nextCycle);
+  const nextBoss = nextBossId ? BOSS_MAP[nextBossId] : null;
+  let nextDeadline = calcDeadline(nextCycle);
+  if (nextBossId === 'inflator') nextDeadline = Math.round((nextDeadline * 1.25) / 10) * 10;
+
+  const relicsFull = state.relics.length >= state.max_relic_slots;
+  const opening = state.pending_pack_choices !== null;
+  const openingAxis = opening ? state.pending_pack_choices![0]?.axis : null;
+  const [showOdds, setShowOdds] = useState(false);
 
   return (
-    /* Bottom-sheet overlay */
     <div
-      className="absolute inset-0 z-30 flex flex-col justify-end"
-      style={{ background: 'rgba(0,0,0,0.7)' }}
+      className="absolute inset-0 z-30 flex items-center justify-center p-4 overlay-in"
+      style={{ background: 'rgba(4,6,10,0.88)' }}
     >
       <div
-        className="flex flex-col max-h-[85vh] overflow-hidden rounded-t-2xl"
-        style={{ background: 'var(--bg-surface)', borderTop: '1px solid var(--border)' }}
+        className="card-rise w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl flex flex-col"
+        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
       >
         {/* Header */}
-        <div className="p-4 flex flex-col gap-1 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          <div className="font-display text-2xl text-center" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
-            CYCLE {state.cycle_number} COMPLETE
+        <div className="px-6 pt-5 pb-4 text-center" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="font-display text-3xl" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
+            CYCLE {state.cycle_number} CLEARED
           </div>
-          <div className="flex justify-center gap-6 font-mono text-sm">
-            <span style={{ color: 'var(--green)' }}>Paid ${Math.floor(paid)}</span>
-            {interestBonus > 0 && (
-              <span style={{ color: 'var(--gold)' }}>+${interestBonus} INTEREST ✦</span>
-            )}
-            {owed > 0 && (
-              <span style={{ color: 'var(--red)' }}>Owed ${Math.ceil(owed)}</span>
+          <div className="flex justify-center gap-4 font-mono text-xs mt-1.5">
+            <span style={{ color: 'var(--green)' }}>Paid ${state.deadline}</span>
+            {state.interest_earned_this_cycle > 0 && (
+              <span style={{ color: 'var(--gold)' }}>+${state.interest_earned_this_cycle.toFixed(2)} INTEREST ✦</span>
             )}
           </div>
-          <div className="flex justify-center gap-6 font-mono text-sm mt-1">
-            <span style={{ color: 'var(--gold)' }}>💵 ${Math.floor(state.wallet)}</span>
-            <span style={{ color: '#60c0ff' }}>🎫 {state.tickets}</span>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          {(['consumables', 'relics'] as const).map(t => (
+          <div className="flex justify-center items-center gap-3 mt-3">
+            <span className="chip font-mono text-sm" style={{ color: 'var(--gold)' }}>💵 ${Math.floor(state.wallet)}</span>
+            <span className="chip font-mono text-sm" style={{ color: '#60c0ff' }}>🎫 {state.tickets}</span>
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className="flex-1 py-2.5 font-display text-base transition-colors cursor-pointer"
-              style={{
-                letterSpacing: '0.08em',
-                background: tab === t ? 'var(--bg-raised)' : 'var(--bg-surface)',
-                color: tab === t ? 'var(--gold)' : 'var(--text-muted)',
-                borderBottom: tab === t ? '2px solid var(--gold)' : '2px solid transparent',
-              }}
+              onClick={() => setShowOdds(v => !v)}
+              title="Check current odds & payouts before buying packs"
+              className="chip font-mono text-sm cursor-pointer"
+              style={{ color: showOdds ? 'var(--gold)' : 'var(--text-muted)' }}
             >
-              {t === 'consumables' ? '🎯 CONSUMABLES' : '💎 RELICS'}
+              👁 ODDS
             </button>
+          </div>
+        </div>
+
+        {/* Odds/payout peek — same live data as the in-game Paytable, so you don't
+            have to remember it while deciding on packs */}
+        {showOdds && (
+          <div className="px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+            <Paytable state={state} />
+          </div>
+        )}
+
+        {/* Pack opening reveal — takes over the shop until all picks are made */}
+        {opening && openingAxis && (
+          <div className="px-6 py-6 flex flex-col items-center gap-4" style={{ borderBottom: '1px solid var(--border)' }}>
+            <div className="font-display text-lg text-center" style={{ color: 'var(--gold)', letterSpacing: '0.08em' }}>
+              {PACK_TYPE_INFO[openingAxis].emoji} PICK {state.pending_pack_picks_remaining > 1 ? `${state.pending_pack_picks_remaining} SYMBOLS` : 'A SYMBOL'} — {PACK_TYPE_INFO[openingAxis].name.toUpperCase()}
+            </div>
+            <div className="flex gap-3 flex-wrap justify-center">
+              {state.pending_pack_choices!.map((boost, i) => {
+                const def = SYMBOL_MAP[boost.symbol];
+                const label = boost.axis === 'frequency' ? '×1.5 appearance rate' : '×1.25 payout';
+                return (
+                  <button
+                    key={i}
+                    onClick={() => onPickPackBoost(boost)}
+                    className="choice-card flex flex-col items-center gap-2 p-4 w-36"
+                  >
+                    <span className="text-4xl leading-none">{def.emoji}</span>
+                    <span className="font-mono text-xs" style={{ color: 'var(--text-primary)' }}>{def.name}</span>
+                    <span className="font-mono text-xs font-bold" style={{ color: boost.axis === 'frequency' ? '#60a5fa' : 'var(--gold)' }}>
+                      {label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={onSkipPackBoost}
+              className="font-mono text-xs cursor-pointer px-4 py-2 rounded-lg transition-colors duration-150"
+              style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+            >
+              SKIP — keep none of these
+            </button>
+          </div>
+        )}
+
+        {/* Consumables — on top */}
+        <ShopSection
+          title="CONSUMABLES · pay 💵"
+          rerolled={state.shop_consumables_rerolled}
+          canReroll={state.tickets >= 2}
+          onReroll={onRerollConsumables}
+        >
+          {state.shop_consumables.map(item => {
+            const price = getConsumablePrice(state, item.price);
+            const affordable = !item.sold && state.wallet >= price;
+            return (
+              <ItemCard
+                key={item.id}
+                emoji={item.emoji}
+                name={item.name}
+                description={item.description}
+                priceLabel={item.sold ? 'SOLD' : `$${price}`}
+                discounted={price < item.price && !item.sold}
+                disabled={!affordable}
+                onBuy={() => onBuyConsumable(item.id)}
+              />
+            );
+          })}
+        </ShopSection>
+
+        {/* Packs — 3 slots, each randomly frequency/payout/themed, some "huge" */}
+        <ShopSection
+          title="PACKS · pay 💵 · permanent symbol boosts"
+          rerolled={state.shop_packs_rerolled}
+          canReroll={state.tickets >= 2 && !opening}
+          onReroll={onRerollPacks}
+        >
+          {state.shop_packs.map((pack, i) => {
+            const affordable = !pack.sold && state.wallet >= pack.price && !opening;
+            if (pack.kind === 'themed') {
+              const theme = PACK_THEMES[pack.symbol!];
+              const symDef = SYMBOL_MAP[pack.symbol!];
+              return (
+                <ItemCard
+                  key={i}
+                  emoji={theme.emoji}
+                  name={`${theme.name} (${symDef.name})`}
+                  description={`Guaranteed ${symDef.name} — ×1.5 frequency AND ×1.25 payout, permanently`}
+                  priceLabel={pack.sold ? 'SOLD' : `$${pack.price}`}
+                  disabled={!affordable}
+                  onBuy={() => onBuyPack(i)}
+                />
+              );
+            }
+            const info = PACK_TYPE_INFO[pack.kind];
+            return (
+              <ItemCard
+                key={i}
+                emoji={info.emoji}
+                name={pack.huge ? `${info.name} (Huge)` : info.name}
+                description={pack.huge ? `${info.description} — huge pack: 5 choices instead of 3` : info.description}
+                priceLabel={pack.sold ? 'SOLD' : `$${pack.price}`}
+                rarity={pack.huge ? 'rare' : undefined}
+                disabled={!affordable}
+                onBuy={() => onBuyPack(i)}
+              />
+            );
+          })}
+        </ShopSection>
+
+        {/* Relics — Relic Case is listed here too, not a separate section */}
+        <ShopSection
+          title={`RELICS · pay 🎫 ${relicsFull ? '· shelf full!' : ''}`}
+          rerolled={state.shop_relics_rerolled}
+          canReroll={state.tickets >= 2}
+          onReroll={onRerollRelics}
+        >
+          {state.shop_relics.map(item => (
+            <ItemCard
+              key={item.id}
+              emoji={item.emoji}
+              name={item.name}
+              description={item.description}
+              priceLabel={item.sold ? 'SOLD' : `${item.cost}🎫`}
+              rarity={item.rarity}
+              disabled={item.sold || relicsFull || state.tickets < item.cost}
+              onBuy={() => onBuyRelic(item.id)}
+            />
           ))}
-        </div>
-
-        {/* Item list */}
-        <div className="flex-1 overflow-y-auto p-4">
-          {tab === 'consumables' && (
-            <div className="flex flex-col gap-3">
-              <div className="flex justify-between items-center">
-                <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Spend 💵 Cash
-                </span>
-                {!state.shop_consumables_rerolled && (
-                  <button
-                    onClick={onRerollConsumables}
-                    disabled={state.tickets < 2}
-                    className="font-mono text-xs px-2 py-1 rounded cursor-pointer"
-                    style={{
-                      background: 'var(--bg-raised)',
-                      border: '1px solid var(--border)',
-                      color: state.tickets >= 2 ? 'var(--text-muted)' : 'var(--text-dim)',
-                    }}
-                  >
-                    🔄 Reroll (2🎫)
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {state.shop_consumables.map(item => (
-                  <ShopCard
-                    key={item.id}
-                    emoji={item.emoji}
-                    name={item.name}
-                    desc={item.description}
-                    cost={`$${item.price}`}
-                    canAfford={!item.sold && state.wallet >= item.price}
-                    sold={item.sold}
-                    currency="cash"
-                    onClick={() => onBuyConsumable(item.id)}
-                  />
-                ))}
-              </div>
-            </div>
+          {state.shop_relic_case && (
+            <ItemCard
+              emoji="🧰"
+              name="Relic Case"
+              description={`Permanently raise your relic shelf from ${state.max_relic_slots} to ${state.max_relic_slots + 1}`}
+              priceLabel={state.shop_relic_case.sold ? 'SOLD' : `${state.shop_relic_case.price}🎫`}
+              disabled={state.shop_relic_case.sold || state.tickets < state.shop_relic_case.price}
+              onBuy={onBuyRelicCase}
+            />
           )}
+        </ShopSection>
 
-          {tab === 'relics' && (
-            <div className="flex flex-col gap-3">
-              <div className="flex justify-between items-center">
-                <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Spend 🎫 Tickets · {state.relics.length}/6
-                </span>
-                {!state.shop_relics_rerolled && (
-                  <button
-                    onClick={onRerollRelics}
-                    disabled={state.tickets < 2}
-                    className="font-mono text-xs px-2 py-1 rounded cursor-pointer"
-                    style={{
-                      background: 'var(--bg-raised)',
-                      border: '1px solid var(--border)',
-                      color: state.tickets >= 2 ? 'var(--text-muted)' : 'var(--text-dim)',
-                    }}
-                  >
-                    🔄 Reroll (2🎫)
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {state.shop_relics.map(item => (
-                  <ShopCard
-                    key={item.id}
-                    emoji={item.emoji}
-                    name={item.name}
-                    desc={item.description}
-                    cost={`${item.cost}🎫`}
-                    canAfford={!item.sold && !item.owned && state.tickets >= item.cost && state.relics.length < 6}
-                    sold={item.sold || item.owned}
-                    soldLabel={item.owned ? 'OWNED' : 'SOLD'}
-                    currency="tickets"
-                    onClick={() => onBuyRelic(item.id)}
-                  />
-                ))}
-              </div>
+        {/* Footer — next cycle preview + start */}
+        <div className="px-6 py-4 flex items-center justify-between gap-4" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="min-w-0">
+            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+              NEXT: CYCLE {nextCycle} · DEADLINE <span style={{ color: 'var(--red)' }}>${nextDeadline}</span>
             </div>
-          )}
-        </div>
-
-        {/* Continue button */}
-        <div className="p-4 shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
+            {nextBoss ? (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xl leading-none">{nextBoss.emoji}</span>
+                <div>
+                  <span className="font-display text-sm" style={{ color: 'var(--red)', letterSpacing: '0.05em' }}>
+                    {nextBoss.name.toUpperCase()}
+                  </span>
+                  <span className="font-mono text-xs ml-2" style={{ color: 'var(--text-muted)' }}>
+                    {nextBoss.description}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-dim)' }}>
+                normal cycle — you'll pick a modifier
+              </div>
+            )}
+          </div>
           <button
             onClick={onNextCycle}
-            className="w-full font-display text-xl py-3 rounded-xl cursor-pointer transition-all duration-200"
+            disabled={opening}
+            className="font-display text-xl px-8 py-3 rounded-xl shrink-0 transition-all duration-150 glow-green"
             style={{
-              background: 'var(--green)',
-              color: '#000',
+              background: opening ? 'var(--bg-card)' : 'var(--green)',
+              color: opening ? 'var(--text-dim)' : '#000',
               letterSpacing: '0.08em',
+              cursor: opening ? 'default' : 'pointer',
             }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'var(--green-bright)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'var(--green)')}
+            onMouseEnter={e => { if (!opening) e.currentTarget.style.background = 'var(--green-bright)'; }}
+            onMouseLeave={e => { if (!opening) e.currentTarget.style.background = 'var(--green)'; }}
           >
-            → START CYCLE {nextCycle}
+            START CYCLE {nextCycle}
           </button>
         </div>
       </div>
@@ -177,46 +252,69 @@ export function Shop({
   );
 }
 
-function ShopCard({
-  emoji, name, desc, cost, canAfford, sold, soldLabel = 'SOLD', currency, onClick,
-}: {
-  emoji: string; name: string; desc: string; cost: string;
-  canAfford: boolean; sold: boolean; soldLabel?: string;
-  currency: 'cash' | 'tickets'; onClick: () => void;
-}) {
-  const accentColor = currency === 'tickets' ? 'rgba(96,192,255,0.4)' : 'rgba(200,168,75,0.4)';
-  const borderColor = sold ? 'var(--border)' : canAfford ? accentColor : 'var(--border)';
+// ─── Section wrapper ──────────────────────────────────────────────────────────
 
+function ShopSection({
+  title, rerolled, canReroll, onReroll, children,
+}: {
+  title: string;
+  rerolled: boolean;
+  canReroll: boolean;
+  onReroll: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <div
-      className="casino-panel p-3 flex flex-col gap-2 rounded-xl"
-      style={{ border: `1px solid ${borderColor}`, opacity: sold ? 0.5 : 1 }}
-    >
-      <div className="flex items-center gap-2">
-        <span className="text-2xl">{emoji}</span>
-        <div>
-          <div className="font-display text-xs" style={{ color: 'var(--text-primary)', letterSpacing: '0.05em' }}>
-            {name.toUpperCase()}
-          </div>
-          <div className="font-mono text-sm font-bold" style={{ color: currency === 'tickets' ? '#60c0ff' : 'var(--gold)' }}>
-            {cost}
-          </div>
-        </div>
+    <div className="px-6 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>{title}</span>
+        <button
+          onClick={onReroll}
+          disabled={rerolled || !canReroll}
+          className={`font-mono text-xs px-2.5 py-1 rounded ${rerolled || !canReroll ? 'cursor-default' : 'cursor-pointer'}`}
+          style={{
+            background: 'var(--bg-raised)',
+            border: '1px solid var(--border)',
+            color: rerolled || !canReroll ? 'var(--text-dim)' : '#60c0ff',
+          }}
+        >
+          {rerolled ? 'REROLLED' : '↻ REROLL 2🎫'}
+        </button>
       </div>
-      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{desc}</div>
-      <button
-        onClick={onClick}
-        disabled={!canAfford || sold}
-        className="font-mono text-xs py-1.5 rounded transition-colors cursor-pointer mt-auto"
-        style={{
-          background: sold ? 'var(--bg-raised)' : canAfford ? (currency === 'tickets' ? 'rgba(96,192,255,0.2)' : 'rgba(200,168,75,0.2)') : 'var(--bg-raised)',
-          border: `1px solid ${sold ? 'var(--border)' : canAfford ? borderColor : 'var(--border)'}`,
-          color: sold ? 'var(--text-dim)' : canAfford ? (currency === 'tickets' ? '#60c0ff' : 'var(--gold)') : 'var(--text-dim)',
-          cursor: canAfford && !sold ? 'pointer' : 'not-allowed',
-        }}
-      >
-        {sold ? soldLabel : canAfford ? 'BUY' : `Need ${cost}`}
-      </button>
+      <div className="flex gap-2.5 flex-wrap">{children}</div>
     </div>
+  );
+}
+
+// ─── Item card ────────────────────────────────────────────────────────────────
+
+function ItemCard({
+  emoji, name, description, priceLabel, rarity, discounted, disabled, onBuy,
+}: {
+  emoji: string;
+  name: string;
+  description: string;
+  priceLabel: string;
+  rarity?: 'common' | 'rare' | 'legendary';
+  discounted?: boolean;
+  disabled: boolean;
+  onBuy: () => void;
+}) {
+  const rarityBorder = { common: '#5a6478', rare: '#3b82f6', legendary: 'var(--gold)' };
+  return (
+    <button
+      onClick={onBuy}
+      disabled={disabled}
+      title={description}
+      className={`flex flex-col items-center gap-1.5 p-3 rounded-xl w-[104px] transition-all duration-150 ${rarity ? `rarity-${rarity}` : ''} ${disabled ? 'opacity-45 cursor-default' : 'cursor-pointer hover:-translate-y-1'}`}
+      style={{ background: 'var(--bg-card)', border: `1px solid ${rarity ? rarityBorder[rarity] : 'var(--border)'}` }}
+    >
+      <span className="text-3xl leading-none">{emoji}</span>
+      <span className="font-mono text-xs text-center leading-tight" style={{ color: 'var(--text-primary)' }}>
+        {name}
+      </span>
+      <span className="font-mono text-xs font-bold" style={{ color: discounted ? 'var(--green-bright)' : 'var(--gold)' }}>
+        {priceLabel}{discounted ? ' ✂' : ''}
+      </span>
+    </button>
   );
 }

@@ -1,4 +1,5 @@
-import { RELIC_MAP } from '../constants';
+import { BOSS_MAP, EVENT_CARD_MAP } from '../constants';
+import { isBossCycle } from '../gameLogic';
 import type { GameState } from '../types';
 
 interface Props {
@@ -6,112 +7,91 @@ interface Props {
 }
 
 export function HUD({ state }: Props) {
-  const owed = Math.max(0, state.deadline - state.deposited);
-  const attemptsTotal = 3;
-  const attemptsLeft = state.attempts_remaining;
+  const boss = state.active_boss ? BOSS_MAP[state.active_boss] : null;
 
   return (
-    <>
-      {/* Cycle */}
-      <div className="flex flex-col gap-0.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.15em' }}>CYCLE</div>
-        <div className="font-display text-2xl" style={{ color: 'var(--text-primary)' }}>
-          {state.cycle_number}
+    <div className="flex flex-col gap-2.5">
+
+      {/* Mult + streak — top of the right panel */}
+      <div className="stat-card flex items-center justify-between">
+        <div>
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>MULT</div>
+          <div className="font-display text-3xl leading-none mt-1" style={{ color: '#f97316' }}>
+            ×{state.multiplier.toFixed(1)}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>🔥 STREAK</div>
+          <div
+            className="font-display text-3xl leading-none mt-1"
+            style={{ color: state.streak >= 10 ? '#f97316' : state.streak >= 5 ? 'var(--gold)' : 'var(--text-primary)' }}
+          >
+            {state.streak}
+          </div>
+          {/* milestone pips: 5 / 10 / 15 */}
+          <div className="flex gap-1 mt-1.5 justify-end">
+            {[5, 10, 15].map(m => (
+              <div key={m} className={`pip ${state.streak >= m ? 'pip-lit' : ''}`} title={`streak ${m}`} />
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="gold-line" />
-
-      {/* Deadline / deposited / owed */}
-      <div className="flex flex-col gap-1.5">
-        <StatRow label="DEADLINE"  value={`$${state.deadline}`} />
-        <StatRow label="DEPOSITED" value={`$${Math.floor(state.deposited)}`} valueColor="var(--green)" />
-        <StatRow label="OWED"      value={`$${Math.ceil(owed)}`} valueColor={owed > 0 ? 'var(--red)' : 'var(--green)'} />
-      </div>
-
-      <div className="gold-line" />
-
-      {/* Multiplier */}
-      <div className="flex flex-col gap-0.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MULT</div>
-        <div className="font-display text-3xl" style={{ color: '#f97316' }}>
-          ×{state.multiplier.toFixed(1)}
-        </div>
-      </div>
-
-      {/* Streak */}
-      <div className="flex flex-col gap-0.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>🔥 STREAK</div>
-        <div
-          className="font-display text-2xl"
-          style={{ color: state.streak >= 10 ? '#f97316' : state.streak >= 5 ? 'var(--gold)' : 'var(--text-primary)' }}
-        >
-          {state.streak}
-        </div>
-      </div>
-
-      <div className="gold-line" />
-
-      {/* Attempts remaining — dots */}
-      <div className="flex flex-col gap-1.5">
-        <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>ATTEMPTS</div>
-        <div className="flex gap-2">
-          {Array.from({ length: attemptsTotal }).map((_, i) => (
-            <div
-              key={i}
-              className="w-4 h-4 rounded-full"
-              style={{
-                background: i < attemptsLeft ? 'var(--green)' : 'var(--bg-raised)',
-                border: `2px solid ${i < attemptsLeft ? 'var(--green-bright)' : 'var(--border)'}`,
-              }}
-            />
-          ))}
-        </div>
-        <div className="font-mono text-xs" style={{ color: 'var(--text-dim)' }}>
-          {attemptsLeft}/3 left
-        </div>
-      </div>
-
-      {/* Relics */}
-      {state.relics.length > 0 && (
-        <>
-          <div className="gold-line" />
-          <div className="flex flex-col gap-1">
-            <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>RELICS</div>
-            <div className="flex flex-wrap gap-1">
-              {state.relics.map((r, i) => {
-                const def = RELIC_MAP[r];
-                return (
-                  <span key={i} title={`${def.name}: ${def.description}`}
-                    className="text-lg cursor-default" style={{ lineHeight: 1 }}>
-                    {def.emoji}
-                  </span>
-                );
-              })}
+      {/* Boss rule card */}
+      {boss && (
+        <div className="stat-card stat-card-boss flex items-start gap-2.5">
+          <span className="text-3xl leading-none">{boss.emoji}</span>
+          <div className="min-w-0">
+            <div className="font-display text-base leading-tight" style={{ color: 'var(--red)', letterSpacing: '0.05em' }}>
+              {boss.name.toUpperCase()}
+            </div>
+            <div className="font-mono text-xs mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+              {boss.description}
             </div>
           </div>
-        </>
+        </div>
       )}
 
-      {/* Active event */}
-      {state.active_event && (
-        <>
-          <div className="gold-line" />
-          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>EVENT</div>
-          <div className="font-mono text-xs" style={{ color: 'var(--gold)' }}>
-            {state.active_event.replace(/_/g, ' ').toUpperCase()}
+      {/* Attempts */}
+      <div className="stat-card flex items-center justify-between">
+        <span className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ATTEMPTS</span>
+        <div className="flex gap-2 items-center">
+          {Array.from({ length: state.active_boss === 'short_fuse' ? 2 : 3 }).map((_, i) => (
+            <span key={i} className="text-base leading-none" style={{ opacity: i < state.attempts_remaining ? 1 : 0.2 }}>
+              💣
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Active modifiers — a stacking list, one chip each */}
+      {state.active_events.length > 0 && (
+        <div className="stat-card">
+          <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+            MODIFIERS {state.active_events.length}
           </div>
-        </>
+          <div className="flex flex-col gap-1">
+            {state.active_events.map(id => {
+              const def = EVENT_CARD_MAP[id];
+              return (
+                <div key={id} className="flex items-center gap-1.5" title={def.description}>
+                  <span className="text-sm leading-none">{def.emoji}</span>
+                  <span className="font-mono text-xs truncate" style={{ color: 'var(--gold)' }}>
+                    {def.name.toUpperCase()}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
-    </>
-  );
-}
 
-function StatRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
-  return (
-    <div className="flex justify-between items-baseline gap-1">
-      <span className="font-mono text-xs shrink-0" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>{label}</span>
-      <span className="font-mono font-bold text-xs" style={{ color: valueColor ?? 'var(--text-primary)' }}>{value}</span>
+      {/* Next-boss hint on the cycle before a boss */}
+      {!state.active_boss && isBossCycle(state.cycle_number + 1) && (
+        <div className="font-mono text-xs text-center py-1 rounded" style={{ color: 'var(--red)', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)' }}>
+          ⚠ boss next cycle — prep in the shop
+        </div>
+      )}
     </div>
   );
 }

@@ -1,14 +1,23 @@
-interface Props { onStart: () => void; }
+import logoSrc from '../assets/logo.png';
+import { loadMeta } from '../meta';
 
-export function StartScreen({ onStart }: Props) {
+interface Props { onStart: () => void; onOpenSkills: () => void; }
+
+export function StartScreen({ onStart, onOpenSkills }: Props) {
+  const prestige = loadMeta().prestige_points;
   return (
     <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-6">
-      {/* Title */}
+      {/* Title — logo art has black padding baked in, crop it with a window */}
       <div className="text-center">
-        <div className="font-display text-7xl md:text-9xl text-glow-gold" style={{ color: 'var(--gold)' }}>
-          EXPLODDS
+        <div className="overflow-hidden flex items-center justify-center mx-auto" style={{ height: 150, maxWidth: 560 }}>
+          <img
+            src={logoSrc}
+            alt="EXPLODDS"
+            className="w-full"
+            style={{ filter: 'drop-shadow(0 0 24px rgba(200,120,40,0.35))' }}
+          />
         </div>
-        <div className="font-mono text-sm tracking-[0.3em] mt-1" style={{ color: 'var(--text-muted)' }}>
+        <div className="font-mono text-sm tracking-[0.3em] mt-2" style={{ color: 'var(--text-muted)' }}>
           MINE THE ODDS
         </div>
       </div>
@@ -25,8 +34,9 @@ export function StartScreen({ onStart }: Props) {
             ['💣', 'Mines field with 5×5 grid'],
             ['💵', 'Bet before each board — bet lost on bust'],
             ['🎯', 'Earn cash per tile cleared'],
+            ['🔢', 'Empty tiles show # of adjacent bombs'],
             ['💳', 'Pay off your cycle DEADLINE to advance'],
-            ['3×', '3 attempts per cycle (bust = attempt used)'],
+            ['3️⃣', '3 attempts per cycle (bust = attempt used)'],
             ['🎫', 'Earn tickets → spend on relics in shop'],
           ].map(([icon, text]) => (
             <div key={text} className="flex items-center gap-2 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>
@@ -44,11 +54,11 @@ export function StartScreen({ onStart }: Props) {
         </div>
         <div className="flex justify-center gap-2 font-mono text-xs">
           {[
-            { cycle: 1, debt: 100 },
-            { cycle: 2, debt: 180 },
-            { cycle: 3, debt: 290 },
-            { cycle: 4, debt: 430 },
-            { cycle: 5, debt: 600 },
+            { cycle: 1, debt: 80 },
+            { cycle: 2, debt: 140 },
+            { cycle: 3, debt: 190 },
+            { cycle: 4, debt: 280 },
+            { cycle: 5, debt: 400 },
           ].map(({ cycle, debt }) => (
             <div
               key={cycle}
@@ -64,7 +74,7 @@ export function StartScreen({ onStart }: Props) {
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
           >
             <div style={{ color: 'var(--text-muted)' }}>6+</div>
-            <div style={{ color: 'var(--red)' }}>×1.35</div>
+            <div style={{ color: 'var(--red)' }}>×1.3</div>
           </div>
         </div>
       </div>
@@ -84,6 +94,14 @@ export function StartScreen({ onStart }: Props) {
         onMouseLeave={e => (e.currentTarget.style.background = 'var(--green)')}
       >
         NEW RUN
+      </button>
+
+      <button
+        onClick={onOpenSkills}
+        className="chip font-mono text-sm cursor-pointer"
+        style={{ color: '#c084fc' }}
+      >
+        🌳 SKILLS {prestige > 0 ? `(✦ ${prestige})` : ''}
       </button>
     </div>
   );

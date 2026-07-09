@@ -1,14 +1,17 @@
 import { useCallback, useState } from 'react';
 import { SYMBOL_MAP, ALL_CONSUMABLES } from '../constants';
+import { adjacentBombCount } from '../gameLogic';
 import type { GameState, Tile } from '../types';
 import bombSrc from '../assets/bomb.png';
 
 interface Props {
   state: GameState;
   onTileClick: (index: number) => void;
+  debugReveal?: boolean;
+  revealAll?: boolean;
 }
 
-export function Grid({ state, onTileClick }: Props) {
+export function Grid({ state, onTileClick, debugReveal = false, revealAll = false }: Props) {
   const { board, phase } = state;
   const [animating, setAnimating] = useState<Set<number>>(new Set());
   const [infoOpen, setInfoOpen] = useState(false);
@@ -24,12 +27,14 @@ export function Grid({ state, onTileClick }: Props) {
 
   const scannerActive = state.pending_scanner_axis !== null;
   const isBustFlash = phase === 'BUST_FLASH';
-  const bombsHidden = board.filter(t => t.type === 'bomb' && t.state === 'hidden').length;
+  const blackout = state.active_boss === 'blackout';
+  const sixthSense = state.relics.includes('sixth_sense');
+  const bombsHidden = board.filter(t => t.type === 'bomb' && (t.state === 'hidden' || t.state === 'flagged')).length;
   const safeHidden  = board.filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted')).length;
   const emptyHidden = board.filter(t => t.type === 'empty' && t.state === 'hidden').length;
 
   return (
-    <div className="flex flex-col gap-2 w-full max-w-sm">
+    <div className="flex flex-col gap-2 w-full max-w-[30rem]">
       {/* Info bar */}
       <div className="flex justify-between items-center font-mono text-xs px-1">
         <span style={{ color: 'var(--red)' }}>💣 {bombsHidden}</span>
@@ -52,16 +57,25 @@ export function Grid({ state, onTileClick }: Props) {
             <GridTile
               key={tile.index}
               tile={tile}
+              adjacentBombs={
+                !blackout && (tile.state === 'empty_revealed' || (sixthSense && tile.state === 'revealed' && tile.type === 'symbol'))
+                  ? adjacentBombCount(board, tile.index)
+                  : 0
+              }
+              ghostAdjacentBombs={debugReveal ? adjacentBombCount(board, tile.index) : 0}
               isAnimating={animating.has(tile.index)}
               scannerActive={scannerActive}
               clearing={phase === 'CLEARING'}
               onClick={handleClick}
+              debugReveal={debugReveal}
+              revealAll={revealAll}
             />
           ))}
         </div>
 
-        {/* Bust flash overlay */}
-        {isBustFlash && (
+        {/* Bust flash overlay — only during the brief initial flash, before the
+            full board reveal (revealAll) takes over */}
+        {isBustFlash && !revealAll && (
           <div
             className="absolute inset-0 flex items-center justify-center rounded-xl bust-flash"
             style={{ background: 'rgba(180,30,30,0.75)', zIndex: 10 }}
@@ -99,20 +113,27 @@ export function Grid({ state, onTileClick }: Props) {
 
 interface TileProps {
   tile: Tile;
-  index?: number;
+  adjacentBombs: number;
+  ghostAdjacentBombs: number;
   isAnimating: boolean;
   scannerActive: boolean;
   clearing: boolean;
   onClick: (i: number) => void;
+  debugReveal: boolean;
+  revealAll?: boolean;
 }
 
-function GridTile({ tile, isAnimating, scannerActive, clearing, onClick }: TileProps) {
+function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
   const isHidden    = tile.state === 'hidden';
   const isHinted    = tile.state === 'hinted';
+  const isFlagged   = tile.state === 'flagged';
   const isRevealed  = tile.state === 'revealed';
   const isBombHit   = tile.state === 'bomb_hit';
   const isEmpty     = tile.state === 'empty_revealed';
-  const isClickable = (isHidden || isHinted) && clearing;
+  const isClickable = (isHidden || isHinted || isFlagged) && clearing;
+  // Post-bust board reveal: still-hidden tiles show their true content, same
+  // visual treatment as GameOver's FinalBoard reveal (dimmed, non-interactive).
+  const isGhostReveal = revealAll && (isHidden || isHinted || isFlagged);
 
   const entranceDelay = `${(tile.index % 5) * 20 + Math.floor(tile.index / 5) * 30}ms`;
 
@@ -131,9 +152,18 @@ function GridTile({ tile, isAnimating, scannerActive, clearing, onClick }: TileP
   } else if (isEmpty) {
     bg = 'rgba(30,30,30,0.6)';
     borderColor = 'rgba(255,255,255,0.04)';
+  } else if (isGhostReveal && tile.type === 'bomb') {
+    bg = 'rgba(180,30,30,0.15)';
+    borderColor = 'rgba(200,50,50,0.4)';
+  } else if (isGhostReveal) {
+    bg = 'rgba(20,30,50,0.5)';
+    borderColor = 'rgba(255,255,255,0.06)';
   } else if (isHinted) {
     bg = 'rgba(59,130,246,0.12)';
     borderColor = 'rgba(59,130,246,0.5)';
+  } else if (isFlagged) {
+    bg = 'rgba(220,38,38,0.10)';
+    borderColor = 'rgba(220,38,38,0.55)';
   } else if (tile.combo_highlight) {
     borderColor = 'rgba(255,217,61,0.8)';
     bg = 'rgba(255,217,61,0.1)';
@@ -165,19 +195,56 @@ function GridTile({ tile, isAnimating, scannerActive, clearing, onClick }: TileP
         isAnimating ? 'tile-reveal' : '',
       ].filter(Boolean).join(' ')}
     >
-      <TileContent tile={tile} isAnimating={isAnimating} consumableDef={consumableDef ?? null} />
+      <TileContent tile={tile} adjacentBombs={adjacentBombs} isAnimating={isAnimating} consumableDef={consumableDef ?? null} isGhostReveal={isGhostReveal} />
+      {debugReveal && !revealAll && (tile.state === 'hidden' || tile.state === 'hinted' || tile.state === 'flagged') && (
+        <DebugGhost tile={tile} adjacentBombs={ghostAdjacentBombs} />
+      )}
     </button>
   );
 }
 
+// Debug-only peek at a tile's true content, without touching game state —
+// purely visual, still fully clickable/playable underneath. Shows the adjacent
+// bomb count for every non-bomb tile too (not just what Sixth Sense/empties
+// would reveal in real play) since this is a full "true info" testing aid.
+function DebugGhost({ tile, adjacentBombs }: { tile: Tile; adjacentBombs: number }) {
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center rounded-xl pointer-events-none"
+      style={{ border: '1px dashed rgba(192,132,252,0.6)', background: 'rgba(192,132,252,0.06)' }}
+    >
+      {tile.type === 'bomb' ? (
+        <img src={bombSrc} alt="bomb" className="w-1/2 h-1/2 object-contain opacity-50" />
+      ) : tile.type === 'symbol' && tile.symbol ? (
+        <span className="text-xl leading-none opacity-50">{SYMBOL_MAP[tile.symbol].emoji}</span>
+      ) : null}
+      {tile.type !== 'bomb' && adjacentBombs > 0 && (
+        <span
+          className="absolute bottom-0.5 right-1 font-mono font-bold text-xs leading-none opacity-70"
+          style={{ color: ADJ_COLORS[adjacentBombs] }}
+        >
+          {adjacentBombs}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Minesweeper-style number colors, indexed by adjacent bomb count (1-8)
+const ADJ_COLORS = ['', '#60a5fa', '#4ade80', '#f87171', '#c084fc', '#fb923c', '#f472b6', '#facc15', '#f87171'];
+
 function TileContent({
   tile,
+  adjacentBombs,
   isAnimating,
   consumableDef,
+  isGhostReveal = false,
 }: {
   tile: Tile;
+  adjacentBombs: number;
   isAnimating: boolean;
   consumableDef: typeof ALL_CONSUMABLES[0] | null;
+  isGhostReveal?: boolean;
 }) {
   if (tile.state === 'bomb_hit') {
     return <img src={bombSrc} alt="bomb" className={`w-3/4 h-3/4 object-contain ${isAnimating ? 'icon-pop' : ''}`} />;
@@ -187,16 +254,48 @@ function TileContent({
     return <img src={bombSrc} alt="bomb" className="w-3/4 h-3/4 object-contain opacity-60" />;
   }
 
+  // Post-bust board reveal — show this still-hidden tile's true content, dimmed
+  if (isGhostReveal) {
+    if (tile.type === 'bomb') {
+      return <img src={bombSrc} alt="bomb" className="w-3/4 h-3/4 object-contain opacity-55" />;
+    }
+    if (tile.type === 'symbol' && tile.symbol) {
+      return <span className="text-2xl sm:text-3xl leading-none opacity-45">{SYMBOL_MAP[tile.symbol].emoji}</span>;
+    }
+    return null;
+  }
+
   if (tile.state === 'revealed' && tile.symbol) {
     const def = SYMBOL_MAP[tile.symbol];
     return (
-      <span className={`text-2xl sm:text-3xl leading-none ${isAnimating ? 'icon-pop' : ''}`}>
-        {def.emoji}
-      </span>
+      <>
+        <span className={`text-2xl sm:text-3xl leading-none ${isAnimating ? 'icon-pop' : ''}`}>
+          {def.emoji}
+        </span>
+        {/* Sixth Sense relic: adjacent bomb count, same as an empty tile's number */}
+        {adjacentBombs > 0 && (
+          <span
+            className="absolute bottom-0.5 right-1 font-mono font-bold text-xs leading-none"
+            style={{ color: ADJ_COLORS[adjacentBombs] }}
+          >
+            {adjacentBombs}
+          </span>
+        )}
+      </>
     );
   }
 
   if (tile.state === 'empty_revealed') {
+    if (adjacentBombs > 0) {
+      return (
+        <span
+          className={`font-mono font-bold text-xl leading-none ${isAnimating ? 'icon-pop' : ''}`}
+          style={{ color: ADJ_COLORS[adjacentBombs] }}
+        >
+          {adjacentBombs}
+        </span>
+      );
+    }
     return (
       <div className="w-1/3 h-1/3 rounded-sm" style={{ background: 'rgba(255,255,255,0.06)' }} />
     );
@@ -204,6 +303,10 @@ function TileContent({
 
   if (tile.state === 'hinted') {
     return <span className="text-xl opacity-40">💎</span>;
+  }
+
+  if (tile.state === 'flagged') {
+    return <span className="text-xl" style={{ opacity: 0.85 }}>⚠️</span>;
   }
 
   // Hidden — show placed consumable if any
@@ -218,31 +321,53 @@ function TileContent({
 
 import type { RelicId } from '../types';
 
+// Small mini-tile strip standing in for the text trigger description — tight
+// touching tiles mean "must land in a line/adjacent", spaced tiles mean "just
+// need this many anywhere on the board".
+function MiniPattern({ emoji, count, touching }: { emoji: string; count: number; touching: boolean }) {
+  return (
+    <div className={`flex shrink-0 ${touching ? 'gap-0.5' : 'gap-1'}`}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div
+          key={i}
+          className="w-5 h-5 rounded flex items-center justify-center text-[10px] leading-none"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+        >
+          {emoji}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ComboInfoOverlay({ onClose, relics }: { onClose: () => void; relics: RelicId[] }) {
+  // `touching: true` = must land in a line/adjacent (Cherry Rush/Banana Split);
+  // `touching: false` = just needs the count anywhere on the board — the mini
+  // tile spacing communicates this instead of a text description.
   const rows = [
     {
-      emoji: '🍒', name: 'Cherry Rush', trigger: '3 in row/col',
+      emoji: '🍒', name: 'Cherry Rush', count: 3, touching: true,
       base: '$12', modified: relics.includes('cherry_picker') ? '$20' : null,
     },
     {
-      emoji: '🍌', name: 'Banana Split', trigger: '2 adjacent',
+      emoji: '🍌', name: 'Banana Split', count: 2, touching: true,
       base: '×2 each', modified: relics.includes('banana_baron') ? '×3 each' : null,
     },
     {
-      emoji: '⭐', name: 'Star Power', trigger: '3 stars',
+      emoji: '⭐', name: 'Star Power', count: 3, touching: false,
       base: '$18', modified: relics.includes('star_magnet') ? '$28' : null,
     },
     {
-      emoji: '🔔', name: 'Bell Storm', trigger: '4 bells',
+      emoji: '🔔', name: 'Bell Storm', count: 4, touching: false,
       base: 'streak ×10', modified: relics.includes('bell_captain') ? 'streak ×20' : null,
     },
     {
-      emoji: '💎', name: 'Diamond Run', trigger: '4 diamonds',
+      emoji: '💎', name: 'Diamond Run', count: 4, touching: false,
       base: '+15%', modified: relics.includes('diamond_dealer') ? '+25%' : null,
     },
     {
-      emoji: '🪙', name: 'Coin Jackpot', trigger: '2 coins',
-      base: '+4🎫', modified: relics.includes('coin_tycoon') ? '+8🎫' : null,
+      emoji: '🏆', name: 'Perfect Clear', count: 5, touching: false,
+      base: '+30% earnings', modified: null,
     },
   ];
 
@@ -253,24 +378,23 @@ function ComboInfoOverlay({ onClose, relics }: { onClose: () => void; relics: Re
       onClick={onClose}
     >
       <div
-        className="casino-panel p-4 w-72 rounded-xl"
+        className="casino-panel p-4 w-80 rounded-xl"
         style={{ border: '1px solid var(--border)' }}
         onClick={e => e.stopPropagation()}
       >
         <div className="font-display text-base text-center mb-3" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
           COMBO PAYOUTS
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {rows.map(r => (
-            <div key={r.name} className="flex items-center gap-2 font-mono text-xs">
-              <span className="text-lg w-6 shrink-0">{r.emoji}</span>
-              <span className="flex-1" style={{ color: 'var(--text-muted)' }}>{r.name}</span>
-              <span style={{ color: 'var(--text-dim)' }}>{r.trigger}</span>
+            <div key={r.name} className="flex items-center gap-3 font-mono text-xs">
+              <MiniPattern emoji={r.emoji} count={r.count} touching={r.touching} />
+              <span className="flex-1 min-w-0 truncate" style={{ color: 'var(--text-muted)' }}>{r.name}</span>
               <span style={{ color: 'var(--text-primary)' }}>→</span>
               {r.modified ? (
-                <span style={{ color: 'var(--gold)' }}>{r.modified} ✦</span>
+                <span className="shrink-0" style={{ color: 'var(--gold)' }}>{r.modified} ✦</span>
               ) : (
-                <span style={{ color: 'var(--text-primary)' }}>{r.base}</span>
+                <span className="shrink-0" style={{ color: 'var(--text-primary)' }}>{r.base}</span>
               )}
             </div>
           ))}

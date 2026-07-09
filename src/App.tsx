@@ -1,44 +1,63 @@
-import { useEffect, useReducer } from 'react';
-import type { GameState, ConsumableId, RelicId, EventCardId } from './types';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import type { GameState, ConsumableId, RelicId, EventCardId, SymbolBoost } from './types';
 import {
   createInitialState, handleTileClick, handleCashout, handlePlaceBet,
-  handleBustFlashEnd,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards,
+  handleBustFlashEnd, getMinBet, getLockedBet, getConsumablePrice,
+  effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, interestRate,
+  buyRelicCase, dismissResults,
 } from './gameLogic';
-import { calcBombs, calcTileBaseCash, ALL_CONSUMABLES } from './constants';
-import { MIN_BET, BET_STEP, MAX_ACTIVE_RELICS } from './constants';
+import { calcTileBaseCash, ALL_CONSUMABLES } from './constants';
+import { BET_STEP } from './constants';
+import { playSfx, isMuted, setMuted } from './sound';
+import { awardPrestige } from './meta';
 
 import { StartScreen }         from './components/StartScreen';
-import { EventBanner }         from './components/EventCards';
+import { SkillTree }           from './components/SkillTree';
+import { ResultsOverlay }      from './components/ResultsOverlay';
+import { EventChoice }         from './components/EventChoice';
+import { BossIntro }           from './components/BossIntro';
 import { Grid }                from './components/Grid';
 import { HUD }                 from './components/HUD';
+import { CycleHeader }         from './components/CycleHeader';
+import { Paytable }            from './components/Paytable';
+import { RelicShelf }          from './components/RelicShelf';
 import { Shop }                from './components/Shop';
 import { GameOver }            from './components/GameOver';
 import { ConsumablePlacement } from './components/ConsumablePlacement';
 import { ComboOverlay }        from './components/ComboOverlay';
+import { DebugPanel }          from './components/DebugPanel';
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 type Action =
   | { type: 'START_GAME' }
   | { type: 'SELECT_EVENT_CARD'; id: EventCardId }
-  | { type: 'AUTO_SELECT_EVENT' }
+  | { type: 'CONFIRM_BOSS' }
   | { type: 'SET_BET'; amount: number }
   | { type: 'PLACE_BET' }
+  | { type: 'DEPOSIT'; amount: number }
   | { type: 'PLACE_CONSUMABLE'; tileIndex: number }
   | { type: 'SKIP_PLACEMENT' }
   | { type: 'TILE_CLICK'; index: number }
   | { type: 'ACTIVATE_SCANNER'; axis: 'row' | 'col' }
   | { type: 'CANCEL_SCANNER' }
   | { type: 'CASHOUT' }
+  | { type: 'DISMISS_RESULTS' }
   | { type: 'BUST_FLASH_END' }
   | { type: 'CLEAR_COMBO_DISPLAY' }
   | { type: 'BUY_CONSUMABLE'; id: ConsumableId }
   | { type: 'BUY_RELIC'; id: RelicId }
+  | { type: 'BUY_PACK'; index: number }
+  | { type: 'PICK_PACK_BOOST'; boost: SymbolBoost }
+  | { type: 'SKIP_PACK_BOOST' }
+  | { type: 'BUY_RELIC_CASE' }
   | { type: 'REROLL_CONSUMABLES' }
   | { type: 'REROLL_RELICS' }
+  | { type: 'REROLL_PACKS' }
   | { type: 'NEXT_CYCLE' }
-  | { type: 'RESTART' };
+  | { type: 'RESTART' }
+  | { type: 'DEBUG_PATCH'; patch: Partial<GameState> };
 
 // ─── Reducer ──────────────────────────────────────────────────────────────────
 
@@ -51,21 +70,21 @@ function reducer(state: GameState, action: Action): GameState {
       return { ...fresh, phase: 'EVENT_CARD', event_card_options: events };
     }
 
-    case 'SELECT_EVENT_CARD':
-      return {
-        ...state,
-        active_event: action.id,
-        phase: 'BET',
-      };
+    case 'SELECT_EVENT_CARD': {
+      // Modifiers stack permanently for the whole run — append, never replace
+      const next: GameState = { ...state, active_events: [...state.active_events, action.id] };
+      // Greed Mode can raise the min bet above the wallet — resolve instead of soft-locking
+      return toBetPhase(next);
+    }
 
-    case 'AUTO_SELECT_EVENT': {
-      if (state.phase !== 'EVENT_CARD' || state.event_card_options.length === 0) return state;
-      const id = state.event_card_options[Math.floor(Math.random() * state.event_card_options.length)];
-      return { ...state, active_event: id, phase: 'BET' };
+    case 'CONFIRM_BOSS': {
+      if (state.phase !== 'BOSS_INTRO') return state;
+      return toBetPhase(state);
     }
 
     case 'SET_BET': {
-      const minBet = state.active_event === 'greed_mode' ? 25 : MIN_BET;
+      if (getLockedBet(state) !== null) return state; // Warden: bet is locked
+      const minBet = getMinBet(state);
       const clamped = Math.max(minBet, Math.min(action.amount, state.wallet));
       const snapped = Math.round(clamped / BET_STEP) * BET_STEP;
       return { ...state, current_bet: Math.max(minBet, snapped) };
@@ -73,6 +92,9 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'PLACE_BET':
       return handlePlaceBet(state);
+
+    case 'DEPOSIT':
+      return handleDeposit(state, action.amount);
 
     case 'PLACE_CONSUMABLE': {
       const idx = state.placing_index;
@@ -115,6 +137,9 @@ function reducer(state: GameState, action: Action): GameState {
       return handleCashout(state);
     }
 
+    case 'DISMISS_RESULTS':
+      return dismissResults(state);
+
     case 'BUST_FLASH_END':
       return handleBustFlashEnd(state);
 
@@ -123,10 +148,12 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'BUY_CONSUMABLE': {
       const item = state.shop_consumables.find(c => c.id === action.id);
-      if (!item || item.sold || state.wallet < item.price) return state;
+      if (!item || item.sold) return state;
+      const price = getConsumablePrice(state, item.price);
+      if (state.wallet < price) return state;
       return {
         ...state,
-        wallet: parseFloat((state.wallet - item.price).toFixed(2)),
+        wallet: parseFloat((state.wallet - price).toFixed(2)),
         consumables_owned: [...state.consumables_owned, action.id],
         shop_consumables: state.shop_consumables.map(c =>
           c.id === action.id ? { ...c, sold: true } : c
@@ -137,7 +164,7 @@ function reducer(state: GameState, action: Action): GameState {
     case 'BUY_RELIC': {
       const item = state.shop_relics.find(r => r.id === action.id);
       if (!item || item.sold || item.owned || state.tickets < item.cost) return state;
-      if (state.relics.length >= MAX_ACTIVE_RELICS) return state;
+      if (state.relics.length >= state.max_relic_slots) return state;
       return {
         ...state,
         tickets: state.tickets - item.cost,
@@ -147,6 +174,18 @@ function reducer(state: GameState, action: Action): GameState {
         ),
       };
     }
+
+    case 'BUY_PACK':
+      return buyPack(state, action.index);
+
+    case 'PICK_PACK_BOOST':
+      return pickPackBoost(state, action.boost);
+
+    case 'SKIP_PACK_BOOST':
+      return skipPackBoost(state);
+
+    case 'BUY_RELIC_CASE':
+      return buyRelicCase(state);
 
     case 'REROLL_CONSUMABLES': {
       if (state.shop_consumables_rerolled || state.tickets < 2) return state;
@@ -168,36 +207,125 @@ function reducer(state: GameState, action: Action): GameState {
       };
     }
 
+    case 'REROLL_PACKS': {
+      if (state.shop_packs_rerolled || state.tickets < 2 || state.pending_pack_choices !== null) return state;
+      return {
+        ...state,
+        tickets: state.tickets - 2,
+        shop_packs: rerollPacks(state),
+        shop_packs_rerolled: true,
+      };
+    }
+
     case 'NEXT_CYCLE':
-      return startNextCycle(state);
+      return state.pending_pack_choices !== null ? state : startNextCycle(state);
 
     case 'RESTART':
       return createInitialState();
+
+    case 'DEBUG_PATCH':
+      return { ...state, ...action.patch };
 
     default:
       return state;
   }
 }
 
+// ─── Sound wiring: reducer stays pure, this hook diffs state and plays SFX ─────
+
+function useSounds(state: GameState) {
+  const prev = useRef(state);
+
+  useEffect(() => {
+    const p = prev.current;
+    prev.current = state;
+    if (p === state) return;
+
+    // Phase transitions
+    if (p.phase !== state.phase) {
+      if (state.phase === 'BUST_FLASH') playSfx('bomb', { volume: 0.6 });
+      if (state.phase === 'RESULTS')    playSfx('cashout', { volume: 0.55 });
+      if (state.phase === 'GAME_OVER')  playSfx('gameover', { volume: 0.6 });
+      if (state.phase === 'BOSS_INTRO') playSfx('boss', { volume: 0.6 });
+      if ((state.phase === 'CLEARING' || state.phase === 'PLACEMENT') && p.phase === 'BET') {
+        playSfx('reveal', { volume: 0.4 });
+      }
+    }
+
+    // Symbol cleared — pitch rises with streak
+    if (state.tiles_cleared > p.tiles_cleared) {
+      playSfx('symbol', { rate: 1 + Math.min(state.streak, 12) * 0.05 });
+    }
+
+    // Empty revealed mid-attempt
+    if (p.phase === 'CLEARING' && state.phase === 'CLEARING') {
+      const empties = (b: GameState) => b.board.filter(t => t.state === 'empty_revealed').length;
+      if (empties(state) > empties(p)) playSfx('empty', { volume: 0.35 });
+    }
+
+    // Streak milestones
+    if ((p.streak < 5 && state.streak >= 5) || (p.streak < 10 && state.streak >= 10)) {
+      playSfx('milestone', { volume: 0.45 });
+    }
+
+    // Combos
+    if (state.active_combo_display.length > p.active_combo_display.length) {
+      playSfx('combo', { volume: 0.5 });
+    }
+
+    // Deposit toward the deadline (SHOP transition on deadline-met covered above)
+    if (state.deposited > p.deposited && state.phase === 'BET') {
+      playSfx('cashout', { volume: 0.45 });
+    }
+
+    // Shop purchases (relics, consumables, packs)
+    if (state.phase === 'SHOP' &&
+        (state.relics.length > p.relics.length ||
+         state.consumables_owned.length > p.consumables_owned.length ||
+         state.boosts.length > p.boosts.length)) {
+      playSfx('buy', { volume: 0.45 });
+    }
+  }, [state]);
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, createInitialState());
+  const [muted, setMutedState] = useState(isMuted());
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugReveal, setDebugReveal] = useState(false);
+  const [bustRevealReady, setBustRevealReady] = useState(false);
+  const [showSkillTree, setShowSkillTree] = useState(false);
+  const prestigeAwarded = useRef(false);
 
-  // BUST_FLASH auto-transition after 1.2s
+  useSounds(state);
+
+  // Award meta-progression prestige exactly once when a run ends — a side
+  // effect (localStorage write), kept out of the pure reducer.
+  useEffect(() => {
+    if (state.phase === 'GAME_OVER' && !prestigeAwarded.current) {
+      prestigeAwarded.current = true;
+      awardPrestige(state.cycles_survived);
+    }
+    if (state.phase !== 'GAME_OVER') prestigeAwarded.current = false;
+  }, [state.phase, state.cycles_survived]);
+
+  const toggleMute = () => {
+    const m = !muted;
+    setMuted(m);
+    setMutedState(m);
+  };
+
+  // BUST_FLASH: brief red flash (~700ms, matches .bust-flash), then hold on a
+  // full board reveal until the player manually dismisses it (no more auto-advance).
   useEffect(() => {
     if (state.phase === 'BUST_FLASH') {
-      const t = setTimeout(() => dispatch({ type: 'BUST_FLASH_END' }), 1200);
+      setBustRevealReady(false);
+      const t = setTimeout(() => setBustRevealReady(true), 700);
       return () => clearTimeout(t);
     }
-  }, [state.phase]);
-
-  // Event card auto-select after 8s
-  useEffect(() => {
-    if (state.phase === 'EVENT_CARD') {
-      const t = setTimeout(() => dispatch({ type: 'AUTO_SELECT_EVENT' }), 8000);
-      return () => clearTimeout(t);
-    }
+    setBustRevealReady(false);
   }, [state.phase]);
 
   // Auto-clear combo display after animation finishes
@@ -209,71 +337,118 @@ export default function App() {
   }, [state.active_combo_display.length]);
 
   if (state.phase === 'START') {
-    return <StartScreen onStart={() => dispatch({ type: 'START_GAME' })} />;
+    return (
+      <div className="relative">
+        <StartScreen
+          onStart={() => { playSfx('click'); dispatch({ type: 'START_GAME' }); }}
+          onOpenSkills={() => setShowSkillTree(true)}
+        />
+        {showSkillTree && <SkillTree onClose={() => setShowSkillTree(false)} />}
+      </div>
+    );
   }
 
   const isClearing = state.phase === 'CLEARING' || state.phase === 'BUST_FLASH';
-  const isBetting  = state.phase === 'BET' || state.phase === 'EVENT_CARD';
+  const isBetting  = state.phase === 'BET';
 
   return (
-    <div className="casino-root h-screen overflow-hidden flex flex-col">
+    <div className="casino-root h-screen overflow-hidden flex flex-col relative">
       {/* Top bar */}
       <div
-        className="flex items-center justify-between px-4 py-2 shrink-0"
+        className="flex items-center justify-between px-5 py-2.5 shrink-0"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-surface)' }}
       >
         <div className="font-display text-xl text-glow-gold" style={{ color: 'var(--gold)', letterSpacing: '0.1em' }}>
           EXPLODDS
         </div>
-        <div className="flex gap-5 font-mono text-sm">
-          <span style={{ color: 'var(--gold)' }}>💵 ${Math.floor(state.wallet)}</span>
-          <span style={{ color: '#60c0ff' }}>🎫 {state.tickets}</span>
+        <div className="flex items-center gap-2">
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => setDebugOpen(o => !o)}
+              title="Debug console"
+              className="chip font-mono text-sm cursor-pointer"
+              style={{ color: debugOpen ? 'var(--gold)' : 'var(--text-muted)' }}
+            >
+              🛠
+            </button>
+          )}
+          <button
+            onClick={toggleMute}
+            title={muted ? 'Unmute' : 'Mute'}
+            className="chip font-mono text-sm cursor-pointer"
+            style={{ color: muted ? 'var(--text-dim)' : 'var(--text-muted)' }}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
         </div>
       </div>
 
-      {/* 3-column layout */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* Centered game table */}
+      <div className="flex-1 flex items-center justify-center overflow-y-auto px-4 py-4">
+        <div className="w-full max-w-5xl flex gap-4 items-stretch justify-center">
 
-        {/* ── Left panel ───────────────────────────────── */}
-        <div
-          className="w-48 shrink-0 flex flex-col p-3 gap-3 overflow-y-auto"
-          style={{ borderRight: '1px solid var(--border)', background: 'var(--bg-surface)' }}
-        >
-          <LeftPanel state={state} dispatch={dispatch} isBetting={isBetting} isClearing={isClearing} />
-        </div>
-
-        {/* ── Center ───────────────────────────────────── */}
-        <div className="flex-1 flex flex-col items-center p-4 gap-3 overflow-y-auto">
-          {state.phase === 'EVENT_CARD' && (
-            <EventBanner
-              state={state}
-              onSelect={id => dispatch({ type: 'SELECT_EVENT_CARD', id })}
-            />
-          )}
-
-          <div className="relative w-full flex justify-center">
-            <ComboOverlay items={state.active_combo_display} />
-            {state.board.length > 0 ? (
-              <Grid
+          {/* ── Left panel: money, paytable, deadline+deposit, bet controls ── */}
+          <div className="w-60 shrink-0 flex flex-col gap-2.5 self-center">
+            <Paytable state={state} />
+            <div className="casino-panel flex flex-col p-4 gap-3">
+              <LeftPanel
                 state={state}
-                onTileClick={i => dispatch({ type: 'TILE_CLICK', index: i })}
+                dispatch={dispatch}
+                isBetting={isBetting}
+                isClearing={isClearing}
+                bustRevealReady={state.phase === 'BUST_FLASH' && bustRevealReady}
               />
-            ) : (
-              <EmptyBoardPlaceholder phase={state.phase} />
-            )}
+            </div>
+          </div>
+
+          {/* ── Center ── */}
+          <div className="flex flex-col items-center justify-center flex-1 min-w-0 gap-3">
+            <CycleHeader state={state} />
+            <div className="relative w-full flex justify-center">
+              <ComboOverlay items={state.active_combo_display} />
+              {state.board.length > 0 ? (
+                <Grid
+                  state={state}
+                  onTileClick={i => dispatch({ type: 'TILE_CLICK', index: i })}
+                  debugReveal={debugReveal}
+                  revealAll={state.phase === 'BUST_FLASH' && bustRevealReady}
+                />
+              ) : (
+                <EmptyBoardPlaceholder phase={state.phase} />
+              )}
+            </div>
+            <RelicShelf state={state} />
+          </div>
+
+          {/* ── Right panel ── */}
+          <div className="w-64 shrink-0 self-center">
+            <HUD state={state} />
           </div>
         </div>
-
-        {/* ── Right panel ──────────────────────────────── */}
-        <div
-          className="w-48 shrink-0 flex flex-col p-3 gap-3 overflow-y-auto"
-          style={{ borderLeft: '1px solid var(--border)', background: 'var(--bg-surface)' }}
-        >
-          <HUD state={state} />
-        </div>
       </div>
 
-      {/* ── Overlays ─────────────────────────────────── */}
+      {/* ── Overlays ── */}
+      {state.phase === 'EVENT_CARD' && (
+        <EventChoice
+          state={state}
+          onSelect={id => { playSfx('click'); dispatch({ type: 'SELECT_EVENT_CARD', id }); }}
+        />
+      )}
+
+      {state.phase === 'BOSS_INTRO' && (
+        <BossIntro
+          state={state}
+          onConfirm={() => { playSfx('click'); dispatch({ type: 'CONFIRM_BOSS' }); }}
+        />
+      )}
+
+      {state.phase === 'RESULTS' && state.pending_results && (
+        <ResultsOverlay
+          breakdown={state.pending_results}
+          onContinue={() => dispatch({ type: 'DISMISS_RESULTS' })}
+        />
+      )}
+
       {state.phase === 'PLACEMENT' && (
         <div className="absolute inset-0 z-20 bg-black/80 flex items-center justify-center p-4">
           <ConsumablePlacement
@@ -289,14 +464,29 @@ export default function App() {
           state={state}
           onBuyConsumable={id => dispatch({ type: 'BUY_CONSUMABLE', id })}
           onBuyRelic={id => dispatch({ type: 'BUY_RELIC', id })}
+          onBuyPack={index => dispatch({ type: 'BUY_PACK', index })}
+          onPickPackBoost={boost => { playSfx('milestone'); dispatch({ type: 'PICK_PACK_BOOST', boost }); }}
+          onSkipPackBoost={() => { playSfx('click'); dispatch({ type: 'SKIP_PACK_BOOST' }); }}
+          onBuyRelicCase={() => dispatch({ type: 'BUY_RELIC_CASE' })}
           onRerollConsumables={() => dispatch({ type: 'REROLL_CONSUMABLES' })}
           onRerollRelics={() => dispatch({ type: 'REROLL_RELICS' })}
-          onNextCycle={() => dispatch({ type: 'NEXT_CYCLE' })}
+          onRerollPacks={() => dispatch({ type: 'REROLL_PACKS' })}
+          onNextCycle={() => { playSfx('click'); dispatch({ type: 'NEXT_CYCLE' }); }}
         />
       )}
 
       {state.phase === 'GAME_OVER' && (
         <GameOver state={state} onRestart={() => dispatch({ type: 'RESTART' })} />
+      )}
+
+      {debugOpen && (
+        <DebugPanel
+          state={state}
+          debugReveal={debugReveal}
+          onToggleReveal={() => setDebugReveal(v => !v)}
+          onPatch={patch => dispatch({ type: 'DEBUG_PATCH', patch })}
+          onClose={() => setDebugOpen(false)}
+        />
       )}
     </div>
   );
@@ -309,70 +499,162 @@ interface LeftPanelProps {
   dispatch: React.Dispatch<Action>;
   isBetting: boolean;
   isClearing: boolean;
+  bustRevealReady: boolean;
 }
 
-function LeftPanel({ state, dispatch, isBetting, isClearing }: LeftPanelProps) {
-  const minBet = state.active_event === 'greed_mode' ? 25 : MIN_BET;
+function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: LeftPanelProps) {
+  const minBet = getMinBet(state);
+  const lockedBet = getLockedBet(state);
+  const displayBet = lockedBet ?? state.current_bet;
   const maxBet = Math.max(minBet, Math.floor(state.wallet / BET_STEP) * BET_STEP);
-  const previewBombs = calcBombs(state.current_bet, state.wallet, state.cycle_number)
-    + (state.active_event === 'danger_pay' ? 3 : 0);
-  const previewTileCash = calcTileBaseCash(state.current_bet)
-    * (state.active_event === 'danger_pay' ? 1.4 : 1);
+  const previewBombs = state.debug_bomb_override ?? effectiveBombs(state, displayBet, state.wallet);
+  const previewTileCash = calcTileBaseCash(displayBet)
+    * (state.active_events.includes('danger_pay') ? 1.4 : 1);
 
   const canCashout = isClearing && state.attempt_earnings >= 0.01;
-  const cashoutCoversDebt = state.deposited + state.attempt_earnings >= state.deadline;
+  // Cashing out now would let a deposit of everything clear the deadline
+  const cashoutCoversDebt = state.deposited + state.wallet + state.attempt_earnings >= state.deadline;
 
   // Scanner state
   const hasScanner = state.consumables_owned.includes('scanner');
   const scannerActive = state.pending_scanner_axis !== null;
 
+  // Deposit control — only actionable between attempts, while cash remains to commit
+  const remainingDeadline = Math.max(0, state.deadline - state.deposited);
+  const depositCap = Math.min(state.wallet, remainingDeadline);
+  const progress = state.deadline > 0 ? Math.min(1, state.deposited / state.deadline) : 0;
+  const covered = remainingDeadline <= 0;
+  const rate = interestRate(state);
+
+  // Pick an amount first, confirm separately — avoids fat-fingering a deposit
+  const [depositAmount, setDepositAmount] = useState(depositCap);
+  useEffect(() => {
+    setDepositAmount(depositCap);
+  }, [depositCap]);
+
   return (
     <>
+      {/* Wallet + Tickets */}
+      <div className="flex gap-2">
+        <div className="stat-card flex-1">
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>💵 WALLET</div>
+          <div className="font-display text-2xl leading-none mt-1" style={{ color: 'var(--gold)' }}>
+            ${Math.floor(state.wallet)}
+          </div>
+        </div>
+        <div className="stat-card flex-1">
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>🎫 TICKETS</div>
+          <div className="font-display text-2xl leading-none mt-1" style={{ color: '#60c0ff' }}>
+            {state.tickets}
+          </div>
+        </div>
+      </div>
+
+      {/* Deadline + deposit */}
+      <div className="stat-card" style={covered ? { borderColor: 'var(--gold)' } : {}}>
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>💳 DEADLINE</span>
+          <span className="font-mono text-xs font-bold" style={{ color: covered ? 'var(--gold)' : 'var(--red)' }}>
+            {covered ? 'PAID ✦' : `OWED $${Math.ceil(remainingDeadline)}`}
+          </span>
+        </div>
+        <div className="progress-track mt-2">
+          <div className={`progress-fill ${covered ? 'progress-fill-gold' : ''}`} style={{ width: `${progress * 100}%` }} />
+        </div>
+        <div className="flex justify-between font-mono text-xs mt-1.5">
+          <span style={{ color: covered ? 'var(--gold)' : 'var(--green)' }}>${Math.floor(state.deposited)}</span>
+          <span style={{ color: 'var(--text-primary)' }}>${state.deadline}</span>
+        </div>
+        {!covered && (
+          <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-dim)' }} title="Earned on deposited cash, on every successful cashout — never on a bust">
+            ✦ {(rate * 100).toFixed(0)}% interest / cashout
+          </div>
+        )}
+        {isBetting && !covered && depositCap > 0 && (
+          <div className="flex flex-col gap-1.5 mt-2">
+            <div className="flex gap-1">
+              {[0.25, 0.5, 1].map(frac => {
+                const amt = Math.max(0, Math.min(depositCap, Math.round((depositCap * frac) / 5) * 5));
+                return (
+                  <button
+                    key={frac}
+                    onClick={() => setDepositAmount(amt)}
+                    className="flex-1 font-mono text-xs py-1 rounded cursor-pointer"
+                    style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)', color: '#60c0ff' }}
+                  >
+                    ${amt}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => dispatch({ type: 'DEPOSIT', amount: depositAmount })}
+              disabled={depositAmount <= 0}
+              className="w-full font-mono text-xs py-1.5 rounded"
+              style={{
+                background: depositAmount > 0 ? '#60c0ff' : 'var(--bg-raised)',
+                border: '1px solid var(--border)',
+                color: depositAmount > 0 ? '#000' : 'var(--text-dim)',
+                cursor: depositAmount > 0 ? 'pointer' : 'default',
+                fontWeight: 700,
+              }}
+            >
+              CONFIRM DEPOSIT ${depositAmount}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="gold-line" />
+
       {/* Bet amount display */}
       <div className="flex flex-col gap-0.5">
         <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
           {isClearing ? 'ACTIVE BET' : 'BET AMOUNT'}
         </div>
-        <div className="font-display text-3xl" style={{ color: 'var(--gold)' }}>
-          ${state.current_bet}
+        <div className="font-display text-4xl" style={{ color: 'var(--gold)' }}>
+          ${displayBet}
         </div>
+        {lockedBet !== null && isBetting && (
+          <div className="font-mono text-xs" style={{ color: 'var(--red)' }}>
+            ⛓ locked by The Warden
+          </div>
+        )}
       </div>
 
-      {/* Bet slider — only in BET phase */}
-      {isBetting && (
-        <div className="flex flex-col gap-1.5">
-          <input
-            type="range"
-            min={minBet}
-            max={maxBet}
-            step={BET_STEP}
-            value={state.current_bet}
-            onChange={e => dispatch({ type: 'SET_BET', amount: Number(e.target.value) })}
-            className="w-full accent-gold"
-            style={{ accentColor: 'var(--gold)' }}
-          />
-          <div className="flex flex-col gap-0.5 font-mono text-xs">
-            <div className="flex justify-between">
-              <span style={{ color: 'var(--text-muted)' }}>💣 Bombs</span>
-              <span style={{ color: 'var(--red)' }}>{previewBombs}</span>
-            </div>
-            <div className="flex justify-between">
-              <span style={{ color: 'var(--text-muted)' }}>💵/tile</span>
-              <span style={{ color: 'var(--text-primary)' }}>~${previewTileCash.toFixed(2)}</span>
-            </div>
-          </div>
-        </div>
+      {/* Bet slider — only in BET phase, hidden when Warden locks the bet */}
+      {isBetting && lockedBet === null && (
+        <input
+          type="range"
+          min={minBet}
+          max={maxBet}
+          step={BET_STEP}
+          value={state.current_bet}
+          onChange={e => dispatch({ type: 'SET_BET', amount: Number(e.target.value) })}
+          className="w-full"
+          style={{ accentColor: 'var(--gold)' }}
+        />
       )}
 
-      {/* Live bomb/tile info during clearing */}
-      {isClearing && (
-        <div className="flex flex-col gap-0.5 font-mono text-xs">
-          <div className="flex justify-between">
-            <span style={{ color: 'var(--text-muted)' }}>💣 Bombs</span>
-            <span style={{ color: 'var(--red)' }}>{state.bombs_this_attempt}</span>
-          </div>
+      {/* Board preview / live info */}
+      <div className="flex flex-col gap-1 font-mono text-xs rounded-lg p-2.5" style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)' }}>
+        <div className="flex justify-between">
+          <span style={{ color: 'var(--text-muted)' }}>💣 Bombs</span>
+          <span style={{ color: 'var(--red)' }}>{isClearing ? state.bombs_this_attempt : previewBombs}</span>
         </div>
-      )}
+        {!isClearing && (
+          <div className="flex justify-between">
+            <span style={{ color: 'var(--text-muted)' }}>💵 per tile</span>
+            <span style={{ color: 'var(--text-primary)' }}>~${previewTileCash.toFixed(2)}</span>
+          </div>
+        )}
+        {isClearing && (
+          <div className="flex justify-between">
+            <span style={{ color: 'var(--text-muted)' }}>💰 Earned</span>
+            <span style={{ color: 'var(--green-bright)' }}>${state.attempt_earnings.toFixed(2)}</span>
+          </div>
+        )}
+      </div>
 
       <div className="gold-line" />
 
@@ -380,11 +662,11 @@ function LeftPanel({ state, dispatch, isBetting, isClearing }: LeftPanelProps) {
       {isBetting && (
         <button
           onClick={() => dispatch({ type: 'PLACE_BET' })}
-          disabled={state.wallet < minBet || state.phase === 'EVENT_CARD'}
-          className="w-full font-display text-base py-2.5 rounded-xl cursor-pointer transition-all duration-150"
+          disabled={state.wallet < minBet}
+          className="w-full font-display text-lg py-3 rounded-xl cursor-pointer transition-all duration-150"
           style={{
-            background: state.phase !== 'EVENT_CARD' && state.wallet >= minBet ? 'var(--gold)' : 'var(--bg-card)',
-            color: state.phase !== 'EVENT_CARD' && state.wallet >= minBet ? '#000' : 'var(--text-dim)',
+            background: state.wallet >= minBet ? 'var(--gold)' : 'var(--bg-card)',
+            color: state.wallet >= minBet ? '#000' : 'var(--text-dim)',
             letterSpacing: '0.06em',
             border: '1px solid var(--border)',
           }}
@@ -393,12 +675,23 @@ function LeftPanel({ state, dispatch, isBetting, isClearing }: LeftPanelProps) {
         </button>
       )}
 
+      {/* CONTINUE button — replaces CASHOUT once the post-bust board reveal is showing */}
+      {bustRevealReady && (
+        <button
+          onClick={() => dispatch({ type: 'BUST_FLASH_END' })}
+          className="w-full font-display text-lg py-3 rounded-xl cursor-pointer transition-all duration-150"
+          style={{ background: 'var(--gold)', color: '#000', letterSpacing: '0.06em', border: '1px solid var(--border)' }}
+        >
+          CONTINUE
+        </button>
+      )}
+
       {/* CASHOUT button */}
-      {isClearing && (
+      {isClearing && !bustRevealReady && (
         <button
           onClick={() => dispatch({ type: 'CASHOUT' })}
           disabled={!canCashout}
-          className={`w-full font-display text-base py-2.5 rounded-xl transition-all duration-150 leading-tight ${canCashout ? 'cursor-pointer' : 'cursor-not-allowed'} ${cashoutCoversDebt && canCashout ? 'cashout-active' : ''}`}
+          className={`w-full font-display text-lg py-3 rounded-xl transition-all duration-150 leading-tight ${canCashout ? 'cursor-pointer' : 'cursor-not-allowed'} ${cashoutCoversDebt && canCashout ? 'cashout-active' : ''}`}
           style={{
             background: !canCashout
               ? 'var(--bg-card)'
@@ -455,15 +748,15 @@ function LeftPanel({ state, dispatch, isBetting, isClearing }: LeftPanelProps) {
         </div>
       )}
 
-      {/* Consumables list */}
+      {/* Consumable shelf */}
       {state.consumables_owned.filter(c => c !== 'scanner').length > 0 && (
-        <div className="flex flex-col gap-0.5">
-          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>ITEMS</div>
-          <div className="flex flex-wrap gap-1">
+        <div className="flex flex-col gap-1">
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ITEMS</div>
+          <div className="flex flex-wrap gap-1.5">
             {state.consumables_owned.filter(c => c !== 'scanner').map((c, i) => {
               const def = ALL_CONSUMABLES.find(x => x.id === c);
               return (
-                <span key={i} title={def?.description} className="text-lg cursor-default">
+                <span key={i} title={`${def?.name}: ${def?.description}`} className="slot cursor-default">
                   {def?.emoji}
                 </span>
               );
@@ -480,11 +773,11 @@ function LeftPanel({ state, dispatch, isBetting, isClearing }: LeftPanelProps) {
 function EmptyBoardPlaceholder({ phase }: { phase: string }) {
   return (
     <div
-      className="w-full max-w-sm aspect-square rounded-2xl flex items-center justify-center"
+      className="w-full max-w-[30rem] aspect-square rounded-2xl flex items-center justify-center"
       style={{ background: 'var(--bg-card)', border: '1px dashed var(--border)' }}
     >
       <div className="text-center font-mono text-sm" style={{ color: 'var(--text-dim)' }}>
-        {phase === 'EVENT_CARD' ? 'Pick an event card →' : 'Place your bet to start'}
+        {phase === 'BET' ? 'Place your bet to deal the board' : '···'}
       </div>
     </div>
   );
