@@ -2,6 +2,15 @@
 
 Complete reference for continuing development. Read this before touching any code.
 
+**Two separate games, one app.** `src/App.tsx` is a thin router (`mode: 'select' |
+'standard' | 'incremental'`) in front of a `ModeSelect.tsx` chooser. Everything in
+this guide up to "Incremental Dig Mode" below describes **Standard mode**
+(`src/components/StandardGame.tsx` — the original single-mode `App.tsx`, moved
+verbatim). **Incremental Dig Mode** is a fully separate game living under
+`src/incremental/` — see its own section near the end of this file. The two modes
+share zero state and (deliberately) very little code — `src/rng.ts` is the only
+significant shared module.
+
 ---
 
 ## What This Game Is
@@ -986,7 +995,7 @@ ghost view), boss (force `active_boss` to any of the 9), modifiers (toggle any
 `active_events` entry), relics (toggle ownership of any of the 22), consumables
 (stack any of the 9), symbol boosts (add a frequency/payout stack per symbol).
 
-**Reveal-board ghost view** (`debugReveal` state in `App.tsx`, passed to `Grid` →
+**Reveal-board ghost view** (`debugReveal` state in `StandardGame.tsx`, passed to `Grid` →
 `GridTile` → `DebugGhost`) is purely visual — a faint dashed overlay showing each
 hidden tile's true bomb/symbol, `pointer-events: none` so clicks pass through to the
 real button underneath. It never touches `Tile.state`, so it can't desync from real
@@ -994,8 +1003,548 @@ gameplay.
 
 **`debug_bomb_override`** also feeds the LeftPanel's pre-bet bomb preview (so the
 displayed number matches what will actually be dealt) — remember to check both call
-sites (`handlePlaceBet` and the preview calc in `App.tsx`) if you add more overrides
-that should be previewed before betting.
+sites (`handlePlaceBet` and the preview calc in `StandardGame.tsx`) if you add more
+overrides that should be previewed before betting.
+
+**No debug console exists for Incremental Dig Mode yet** — if one is added later, follow
+the same `DEBUG_PATCH`-style generic-override pattern rather than inventing a new one.
+
+---
+
+## Incremental Dig Mode ("The Dig" — src/incremental/)
+
+A second, structurally different game reached from `ModeSelect.tsx`. No betting, no
+deadline economy, no symbols — a growing grid of **bomb / empty / dirt** tiles where
+dirt is worth real cash ($) the instant it's dug. Fully separate file tree; **never
+add code here to `src/types.ts`, `constants.ts`, `gameLogic.ts`, `meta.ts`, or
+`SkillTree.tsx`** — those are Standard-mode-only and the separation is deliberate
+("two games in one," not one unified state machine).
+
+```
+src/incremental/
+├── types.ts             — DigTile, DigTileType/State, DigPhase, DigEndReason,
+│                          DigBossId, DigUpgradeId, OreTierId, DigGameState
+├── constants.ts          — board/bomb/cash escalation formulas, ORE_TIERS ladder,
+│                          checkpoint hook, charges/durability/scanner/nugget tunables
+├── digLogic.ts           — all pure functions (board gen, tile click, run lifecycle)
+├── digBosses.ts          — DIG_BOSSES catalog + getDigBossForCheckpoint (seeded, mirrors
+│                          Standard's getBossForCycle pattern exactly)
+├── digMeta.ts            — persistent upgrade tree (localStorage key 'explodds_dig_meta',
+│                          separate from Standard's 'explodds_meta') + debug-only helpers
+├── IncrementalGame.tsx   — owns its own useReducer + useDigSounds — the "second App.tsx"
+└── components/
+    ├── DigHomeScreen.tsx     — mirrors StartScreen.tsx
+    ├── DigUpgradeTree.tsx    — minimalist icon-grid tree overlay, genuinely recursive (see below)
+    ├── DigGrid.tsx           — dynamic rows×cols, NOT a fork of Grid.tsx
+    ├── DigHUD.tsx            — charges bar, banked vs. at-risk $, checkpoint boss card, CASH OUT
+    ├── DigRunOverOverlay.tsx — ports ResultsOverlay.tsx's typewriter-reveal pattern
+    └── DigDebugPanel.tsx     — dev-only (import.meta.env.DEV), mirrors DebugPanel.tsx's
+                               generic-patch pattern but patches BOTH DigGameState (via
+                               DEBUG_PATCH) and digMeta.ts (localStorage) since Dig's
+                               persistent upgrades live outside GameState
+```
+
+**Why `DigGrid.tsx` isn't a fork of `Grid.tsx`**: `Grid.tsx` is tightly coupled to
+Standard-only concepts (scanner axis, relic/boss checks, consumable rendering,
+hardcoded `grid-cols-5`). `DigGrid.tsx` needs a dynamic `gridTemplateColumns` inline
+style instead (Tailwind can't generate arbitrary `grid-cols-N` at runtime), and none
+of the Standard-only branches — a new, lighter component was cheaper and safer than
+threading `DigTile`/`DigGameState` through the existing one.
+
+**Why `digAdjacentBombCount`/board generation aren't reused from `gameLogic.ts`**:
+`adjacentBombCount` and `floodFillReveal` hardcode bounds against the module-level
+`GRID_SIZE=25`/`GRID_COLS=5` constants — they are **not** board-size-generic. Since
+Dig's board grows (5×5 → 7×7 → 9×9), importing them as-is would silently break the
+moment a level grows past 5×5. `digLogic.ts` has its own parameterized twin,
+`digAdjacentBombCount(board, index, cols)` (rows derived from `board.length/cols`).
+`generateBoard` (Standard) is similarly not reused — saturated with symbol/relic
+logic — Dig has its own `generateDigBoard` using the same shuffle/type-array pattern.
+`src/rng.ts` (`mulberry32`/`weightedChoice`/`rngShuffle`/`newSeed`) genuinely is
+generic and **is** imported as-is. `getDigBossForCheckpoint` in `digBosses.ts` mirrors
+`getBossForCycle`'s exact seeded-shuffle-by-ordinal pattern rather than reusing it
+(different pool, different id type).
+
+### Risk model: press-your-luck, banked per level, cash out any time
+
+No separate "Ore" points currency — dirt tiles are worth **real $** directly (richer
+ore veins are a cash multiplier, see Cash & ore tiers below).
+
+- `currentLevelCash` — at-risk money dug on the level currently in progress.
+- `bankedCash` — permanently safe this run (every previously-cleared level, plus any
+  voluntary cash-out).
+- **Clearing a level** (`isDigLevelClearable` — see Charges section for why this is
+  buffer-aware, not a literal 100% clear) auto-banks `currentLevelCash` and advances to
+  a harder level, same run, same charge budget. Free — no decision needed.
+- **CASH OUT** (`CASH_OUT` action, always available while `phase === 'DIGGING'`, mirrors
+  Standard's always-visible CASHOUT button) banks `currentLevelCash` and ends the run
+  *safely* — nothing is ever lost by choosing to stop.
+- **Hitting a bomb** forfeits `currentLevelCash` **and** this level's mined totals
+  (`minedThisLevel`, see below) — the only real loss condition. Nothing from previously
+  cleared levels is at risk.
+- **Running out of charges** (no bomb involved) auto-banks `currentLevelCash`, same as a
+  voluntary cash-out — exhausting your energy isn't a gamble gone wrong, it's just stopping.
+
+This was chosen deliberately over both a Standard-style full press-your-luck model
+(risk of losing everything) and a fully risk-free model (money never at risk at all):
+buying more charges is never wasted (a cash-out never forfeits anything you already
+banked), and bomb-detection upgrades (Danger Sense, Scanner) are the direct, in-tree
+answer to "won't more charges just mean more chances to die?"
+
+**`DigEndReason`** (`'bomb' | 'out_of_charges' | 'cashed_out'`) lets `DigRunOverOverlay`
+show three distinct end messages even though two of the three bank `currentLevelCash`
+the same way (bomb is the one case that does *not*).
+
+### Cash, ore tiers (Dirt → Copper → Silver → Gold → Platinum → Diamond), and the
+### `minedBanked`/`minedThisLevel` split
+
+`calcDigCashBase(level, dirtValueLevel)` sets a dirt tile's base value — plain Dirt is
+deliberately cheap unskilled (`DIG_CASH_BASE = 1`), with the **Dirt Value** node (3
+levels, direct child of Pickaxe) raising it to $2/$3/$4 per `DIG_DIRT_VALUE_BY_LEVEL`
+(so a fully-upgraded run pays what Dirt always used to pay, $4, before this was made a
+skill). `ORE_TIERS` (`constants.ts`)
+is now the full 6-tier ladder from the user's future-ideas notes (×1/×2/×4/×8/×16/×32).
+**A tier can only roll on a board once its matching Vein upgrade is owned — no
+exceptions, Copper included.** Copper used to have a nonzero base chance even
+unskilled (`DIG_BASE_COPPER_CHANCE` applied regardless of ownership) — that exception
+was removed per an explicit "the game state must respect the tree" request: a fresh
+player with nothing invested sees nothing but plain Dirt, full stop. The chain is
+`copper_vein_1` → `silver_vein_1` → `gold_vein_1` → `platinum_vein_1` →
+`diamond_vein_1`. `generateDigBoard` rolls rarest-tier-first: each *owned* tier above
+Dirt claims a slice of the roll range (`DIG_HIGHER_VEIN_BONUS` per tier, Copper gets
+its own `DIG_BASE_COPPER_CHANCE + DIG_COPPER_VEIN_BONUS` once owned), and whatever's
+left over is plain Dirt — a deliberately simple additive-slices model rather than a
+fully-normalized weighted distribution (see the code comment in `generateDigBoard` if
+you add a 7th tier).
+
+**Two separate mined-totals trackers, not one** — this fixed a real bug found during
+testing: an earlier version tracked one cumulative `mined` record incremented on every
+dig regardless of outcome, so a bomb hit would still show "+$20 Dirt" lines in the
+run-over breakdown even though that money was forfeited, not banked (itemized lines
+didn't reconcile with the $0.00 total). Fixed by splitting into:
+- `minedThisLevel` — this level's dig-so-far, reset to zero and **discarded** on a bomb hit.
+- `minedBanked` — permanent composition of `bankedCash`; `minedThisLevel` merges into
+  it (`bankCurrentLevel` in `digLogic.ts`) on level-clear, cash-out, or out-of-charges —
+  never on a bomb.
+
+`DigRunOverOverlay.tsx` reads only `minedBanked`, so a bomb-ended run correctly shows
+$0.00 with **no** itemized lines rather than misleading "+$X" entries for money that
+was actually lost. If you add more ore tiers or another cash-earning mechanic, make
+sure it flows through `minedThisLevel` → `bankCurrentLevel`, not a raw cumulative total.
+
+**Nugget Luck** (`nugget_luck_1`, child of Copper Vein): each successfully-mined dirt
+tile has a `DIG_NUGGET_CHANCE` chance to pay out double — rolled inside `applyDamage`
+in `digLogic.ts` using the same deterministic per-click `rng`, not `Math.random()`
+(see Durability/Strength/Bulk Click below for why every random roll in a click uses a
+seeded rng — the reducer must stay pure).
+
+### Charges: 1 per click (2 under Iron Will), clear-buffer instead of a literal 100% clear
+
+Every reveal action costs exactly 1 charge, **except under the Iron Will boss** (every
+click costs 2 — see Bosses below). Since every tile now defaults to `DIG_BASE_TOUGHNESS`
+(2) hits (see Durability/Strength/Bulk Click below), a plain dirt tile costs 2 charges
+total unless Durability or Strength is owned — charges and toughness are independent
+per-click costs, not one combined number. There is still no cascade/flood-fill in this pass;
+`digFloodFillReveal` doesn't exist, a future Cascade-Sense-style node would add it.
+Empty tiles show their adjacency number by default (`digAdjacentBombCount`, computed
+live in `DigGrid.tsx`) — NOT gated behind an upgrade (deliberately, so a fresh run is
+immediately playable via deduction) — **except under the Fog boss**, which suppresses
+them for that one checkpoint level (`DigGrid`'s `suppressAdjacency` prop).
+
+**`DIG_CLEAR_BUFFER` (constants.ts) — a level clears once at most this many hidden
+non-bomb tiles remain, not literally every single one.** This was a real balance
+finding from `scripts/dig-sim.mjs`: requiring a strict 100% clear is a compounding-risk
+gauntlet across ~20+ sequential clicks where the LAST few clicks (as hidden tiles
+shrink toward the bomb count) carry sharply escalating risk — and the sim showed
+**raising the charge budget past what's minimally needed does nothing to fix this**
+(clear rates were flat from ~25 charges all the way to 100). The buffer forgives the
+worst of that endgame risk. `isDigLevelClearable(board, buffer)` is the check actually
+used during play; `isDigBoardFullyCleared` (strict, zero hidden non-bomb tiles) still
+exists for a possible future "Perfect Clear"-style bonus.
+
+**Known sim limitation, read before trusting its exact numbers**: the sim's "skill"
+parameter is a flat, uniform risk discount — it cannot model genuine deduction (a real
+player reading adjacency numbers, or owning Danger Sense/Scanner, can PROVE specific
+tiles are 100% safe, not just "somewhat less risky"). The sim's clear-rate numbers
+(`npm run dig-sim`) are a **pessimistic lower bound**, not a literal prediction — real
+skilled play, especially with Danger Sense/Scanner owned, should clear noticeably more
+often than the sim reports. Final numbers still want a real human playtest pass.
+
+`chargesMax` is computed in `startDig` (`digLogic.ts`) by re-reading
+`loadDigMeta().upgrades` **fresh**, not from `state.skills`. This fixed a second real
+bug found during testing: `IncrementalGame`'s `useReducer` only calls
+`createInitialDigState()` once, at component mount — if a player buys an upgrade on
+the Home screen (`DigUpgradeTree` writes straight to `localStorage`, bypassing the
+reducer, same pattern as `SkillTree.tsx`) and then clicks DIG without the component
+remounting, `state.skills` would still hold the stale pre-purchase snapshot. Standard
+mode never hits this because `START_GAME` calls `createInitialState()` fresh on every
+click. **Any function that starts a new Dig run must re-fetch `loadDigMeta().upgrades`
+itself** — don't assume `state.skills` is current.
+
+### Checkpoint bosses (every 3rd level — src/incremental/digBosses.ts, 4 total)
+
+Mirrors Standard's boss pattern exactly: `getDigBossForCheckpoint(seed, level)` seeds a
+shuffle of `DIG_BOSSES` and indexes by checkpoint ordinal (`level/3`), repeating after
+all 4 cycle through — same algorithm as `getBossForCycle`, just a separate pool/id type.
+`state.activeBoss` is set in `startDig`/`advanceDigLevel` whenever the new level is a
+checkpoint (`isDigCheckpointLevel`), `null` otherwise. Each is a single-rule modifier
+for that one level only, same simplicity as Standard's bosses:
+
+| ID | Effect | Hook |
+|----|--------|------|
+| `cave_in` | Bomb density ×1.6 this level | `generateDigBoard` |
+| `fog` | Empty tiles show no adjacency numbers this level | `DigGrid`'s `suppressAdjacency` prop |
+| `iron_will` | Every click costs 2 charges instead of 1 this level | `handleDigTileClick`'s `chargeCost` |
+| `golden_layer` | Ore-tier roll chances ×2 this level (no extra bomb risk) | `generateDigBoard` |
+
+`DigHUD.tsx` shows a "CHECKPOINT BOSS" card with the boss's name/emoji/description
+whenever `state.activeBoss` is set. **No boss-specific twist logic beyond these four
+single-rule modifiers exists** — no special mid-level events, no multi-rule bosses.
+
+### Durability / Strength / Bulk Click (multi-hit ore + a click that hits two tiles)
+
+**Naming note**: this section (and the code's constant/function names) still say
+"Durability" for the `durability_1` node, matching its **id**. In the tree UI it now
+*displays* as **"Pickaxe"** — the root (`pickaxe_1`) took over the "Durability" display
+name and the total-charges job instead (see "Meta-progression" below for the full
+id-vs-display-name swap and why the ids themselves were left alone). Read "Durability"
+below as "the `durability_1` node, shown as Pickaxe in-game."
+
+From the user's future-ideas notes, now implemented — **the baseline was flipped in a
+later balance pass**: every tile, plain Dirt included, now needs `DIG_BASE_TOUGHNESS`
+(2) hits to mine by default ("the dirt requires 2 digs"). This made Durability's
+original job (making ore tougher) redundant, since the baseline is already tough — its
+role changed to the opposite: **relief**, not friction.
+- **Durability** (`durability_1`, child of the root) — once owned, plain Dirt
+  specifically drops back to `DIG_DURABILITY_DIRT_TOUGHNESS` (1) hit; actual ore tiers
+  (Copper and above) stay at the tough 2-hit baseline regardless of Durability — ore is
+  just naturally harder than dirt, Durability or not. A tile that's taken damage but
+  isn't fully mined yet shows `DigTileState = 'cracked'` (still hidden/clickable,
+  displays a small "hits remaining" count) — a third pre-reveal state alongside
+  `'hidden'`/`'hinted'`.
+- **Strength** (`strength_1`, child of Durability) — each click deals
+  `DIG_BASE_STRENGTH + DIG_STRENGTH_BONUS` (2 total) damage instead of 1, one-shotting
+  any 2-toughness tile (dirt without Durability, or any ore tier) regardless of
+  Durability ownership.
+- **Bulk Click** (`bulk_click_1`, child of Strength) — **design decision, not a proven
+  answer**: the user explicitly flagged an unresolved ambiguity here ("does splash
+  strength divide across the tiles hit, or does each tile independently need to meet
+  its own toughness?") and asked for it to be resolved via playtest before building.
+  Implemented as the simpler of the two models: **each tile hit gets your FULL current
+  strength independently** (not divided) — a click also strikes the tile immediately to
+  the right (same row only; a deliberately simple, deterministic pattern, not a full
+  neighborhood) with the same damage as the primary target, at no extra charge cost.
+  Never splashes onto a bomb (skipped entirely if the neighbor is a bomb). **Revisit
+  this choice after real playtesting** — it was picked for implementation simplicity,
+  not because it's provably the more fun model.
+
+Every random roll inside a single click (Nugget Luck, Scanner proc-and-target-pick) uses
+one deterministic `rng = mulberry32(seed + level*100000 + index*977 + chargesRemaining)`
+seeded per click — keeps `handleDigTileClick` a pure function (same convention as the
+rest of the codebase using `rng.ts` instead of `Math.random()`), and `chargesRemaining`
+changing every click means a second hit on the same still-`'cracked'` tile gets a fresh
+roll rather than repeating the first hit's outcome.
+
+### Scanner (passive proc, distinct from Standard's Scanner consumable)
+
+`scanner_prob_1` (child of Durability II, `pickaxe_2` — see Topology below): digging an **empty** tile has a
+`DIG_SCANNER_BASE_CHANCE` chance to also flag a nearby hidden bomb as `'hinted'` — a
+passive proc, not a player-activated targeting tool (Standard's Scanner requires
+choosing a row/col). `scanner_count_1` (child) raises how many bombs get flagged when
+it triggers (`DIG_SCANNER_BASE_COUNT + DIG_SCANNER_COUNT_BONUS`). The two-branch
+"probability vs. count" split the user asked for is approximated by the root node
+doubling as "unlock + set the probability" since v1 nodes are single-tier, not a
+multi-level ladder — a real separate probability ladder is a future refinement if
+ever needed (see CLAUDE.md's Suggested Future Ideas).
+
+### Meta-progression: `digMeta.ts` + `DIG_UPGRADES` — a real, now-15-node branching tree
+
+Unlike `meta.ts`'s `SKILLS` (flat array, independent linear-level skills),
+`DIG_UPGRADES` is a genuine tree: `DigUpgradeNode.parentId` — `null` for the root,
+a sibling's id for a child — and `purchaseDigUpgrade` checks parent-ownership before
+allowing a purchase; `meta.ts`'s `upgradeSkill` doesn't need this since Standard's
+skills aren't tree-structured.
+
+**Nodes are now multi-level, mirroring `meta.ts`'s `SkillDef.levels` pattern
+exactly**: `DigUpgradeNode.levels: { cost: number }[]` replaces the old flat
+`cost: number`, and `meta.upgrades[id]` stores the CURRENT level reached (0 =
+not started) rather than a boolean. `purchaseDigUpgrade` always buys "the next
+level" (`levels[currentLevel].cost`), capped at `levels.length`. Most nodes
+are still effectively single-tier (`levels` of length 1 — a plain on/off
+purchase), but **Pickaxe** and **Dirt Value** are 3-level ladders and
+**Copper Vein** and **Durability** are 2-level ladders (see Topology below) —
+the data model treats every case identically, so adding more levels to any
+existing node later needs no structural change, just a longer `levels` array
+plus a lookup-by-level in whatever `digLogic.ts` function reads that skill.
+Copper Vein's level 2 raises Copper's roll chance further
+(`DIG_COPPER_VEIN_BONUS_BY_LEVEL`, constants.ts); Durability's level 2 extends
+the same "1 hit instead of 2" relief from plain Dirt to Copper ore too
+(`DIG_DURABILITY_COPPER_LEVEL`, digLogic.ts) — both are direct examples of
+"a node either gets stronger or appears more often at a higher level," per
+the user's framing, and both are natural future starting points for a
+level 3 if that's ever wanted.
+
+**Green level-bar segments** (`TreeNode` in `DigUpgradeTree.tsx`): a row of
+small segments along the bottom edge of every node's icon box, one per level
+— filled green left-to-right as the node is upgraded, dim/empty beyond the
+current level. A single-level node just shows one segment (filled once
+owned); Pickaxe/Dirt Value show three, filling one at a time per purchase —
+a quick "how invested am I in this node" readout without needing hover text.
+
+**Fog-of-war visibility** (replaced the original "show everything, dim the
+locked ones" UI): a node is not rendered **at all** — no dimmed preview, no 🔒
+badge — until `isDigUpgradeRevealed(node, meta)` (digMeta.ts) says so. `TreeRow`
+filters its `nodes` list down to only the ones currently revealed before
+rendering (rather than threading a shared `revealed` boolean down through
+`TreeBranch`, which couldn't express "this specific sibling has a stricter
+requirement than the others" — see the `revealAt: 'maxed'` gate below). A
+brand-new player opening Upgrades for the first time sees literally one box
+(**Durability**, the root) and nothing else.
+
+**Reveal can require the parent MAXED, not just owned** (`DigUpgradeNode.revealAt:
+'maxed'`, digMeta.ts): the default threshold is parent level ≥ 1, but a node can
+opt into requiring its parent's level === its parent's `levels.length` instead.
+Currently only **Copper Vein** uses this (gated on **Dirt Value** being fully
+maxed) — a deliberate pacing choice per an explicit request to force a straight,
+focused early path down one branch rather than letting a new player spread one
+dollar across three branches at once. `isDigUpgradeRevealed` is the single
+source of truth for this check and is shared by both the tree's rendering AND
+`purchaseDigUpgrade`'s gate, so a node can never render as buyable when it
+isn't (or vice versa).
+
+**Topology** — root **Durability** has 3 direct branches (a redesign from an
+earlier 6-direct-branch version, per an explicit request to move Danger
+Sense/Scanner deeper and gate Copper Vein behind Dirt Value):
+```
+Durability (root, id: pickaxe_1, 3 levels: 5 base → 7 → 12 → 15 charges)
+├── Dirt Value (3 levels: $1 base → $2 → $3 → $4 plain-dirt cash)
+│    └── Copper Vein (2 levels: unlock → spawns more often — UNLOCKS ONLY ONCE DIRT VALUE MAXED) ─┬── Silver Vein → Gold Vein → Platinum Vein → Diamond Vein (ore ladder)
+│                                                                                                   └── Nugget Luck (double-payout chance)
+├── Pickaxe (id: durability_1, 2 levels: Dirt eased → Copper eased too) → Strength → Bulk Click
+└── Durability II (id: pickaxe_2, +8 more charges on top of the root's ladder)
+     ├── Danger Sense → Danger Sense II (reveal 1 → 2 bombs/level)
+     └── Scanner (probability) → Scanner Range (count)
+```
+See `docs/plans/dig-upgrade-tree.md` for the full node-by-node catalog (every
+id, display name, tooltip string, and cost) kept as a standing reference for
+brainstorming further changes — update it alongside `DIG_UPGRADES` if you
+reshuffle the tree again.
+
+**The root/child id-vs-name swap**: `pickaxe_1` (root, governs total charges)
+now *displays* as "Durability", and `durability_1` (child, governs per-tile
+hit count) now *displays* as "Pickaxe" — a deliberate flavor swap ("your
+pickaxe has durability/charges; investing in the Pickaxe branch sharpens it
+so each swing needs fewer hits") requested explicitly, implemented by
+changing only `name`/`emoji` in `DIG_UPGRADES`, never the `id` — the id is
+wired directly into `digLogic.ts`/`constants.ts` (`skills.pickaxe_1` still
+drives charge count, `skills.durability_1` still drives toughness), so
+renaming the id itself would have needed a localStorage migration for
+existing players' saved progress for a purely cosmetic change. Don't assume
+`name` and `id` agree anywhere in this tree — always check `DIG_UPGRADES` if
+unsure which id backs a displayed name. The play screen's **CHARGES** stat
+was renamed to **DURABILITY** to match (`DigHUD.tsx`, now shown with a ⛏️
+icon instead of ⚡) — the underlying `DigGameState.chargesRemaining`/
+`chargesMax` field names were NOT renamed (an internal-only rename would have
+touched every call site in `digLogic.ts` for zero player-facing benefit).
+
+**`DigUpgradeTree.tsx` is genuinely recursive**, not a fixed root+children layout —
+`TreeBranch` renders a node, then (if it has children **and** the node itself
+is owned) a row of recursively-rendered `TreeBranch`es, handling arbitrary
+depth/branching correctly (the connecting lines themselves are handled
+separately by the SVG overlay, not by anything `TreeBranch` renders inline —
+see below). Still icon + name + price only in the visible layout (no inline
+description text — the compact icon-grid has no room for it), but every
+node's `button` now carries `title={name — description}` as a native hover
+tooltip (same convention as Paytable.tsx's odds tooltips and DigHUD.tsx's
+boss card) so a player can check what a node actually does before spending —
+no lock badge, since a rendered-but-unowned node is by definition already
+unlocked (see fog-of-war note above); the remaining visual states are level
+(green bars) and `affordable` (dims the price if the player can't afford the
+next level yet).
+
+**Connector lines are a measured SVG overlay, not hand-placed CSS borders
+(rewrite)**: an earlier version drew every line with absolutely-positioned
+divs sized by percentages (`ConnectedRow`'s "half-border-per-child" trick) —
+it handled a simple fan-out but two real bugs came from it: siblings with
+different rendered heights (e.g. Danger Sense wrapping to two lines while
+Scanner stayed on one) threw off the percentage math enough to visibly
+misalign, and any layout change from a purchase could leave a line crooked
+since the border pieces were positioned independently of where the boxes
+actually landed. Replaced with a single `<svg>` layered over the whole tree
+(`DigUpgradeTree.tsx`): every node's box gets a ref (`registerNode`, stored in
+a `Map<DigUpgradeId, HTMLDivElement>`), a `useLayoutEffect` re-measures every
+visible parent→child pair's `getBoundingClientRect()` after every render that
+could move something (a purchase, a newly-revealed node, a window resize),
+and `ElbowPath` draws a straight axis-aligned connector (out from the parent's
+edge-center, one bend at the vertical midpoint, into the child's edge-center)
+for each pair. Direction (does the line go down from the parent or up) is
+detected per-edge by comparing measured `top` values, not passed in — so it's
+correct regardless of which side of the root a branch is on. Because every
+sibling's edge shares the same parent anchor point, several edges drawn
+together naturally read as one trunk fanning into a T/comb of horizontal
+branches — this is what makes the T-junctions above and below the root (and
+at any other multi-child node) render as clean 90°-only lines with no
+diagonals, for any number of children, at any depth. Measuring real DOM positions
+instead of assuming symmetric percentages is also what fixed the "line goes
+crooked after a purchase" bug — the SVG is only ever drawn from where things
+actually are.
+
+**Fixed-height name labels**: `TreeNode`'s name text has a fixed `minHeight`
+(reserves 2 lines) regardless of whether the actual name wraps to one line or
+two — this is what keeps siblings like Danger Sense (wraps) and Scanner
+(doesn't) with their icon boxes level with each other. Before this, a
+'flex-end'-aligned (bottom-aligned) row of "up" branches would push a
+two-line node's icon box visibly higher than a one-line sibling's, since
+bottom-alignment measures from the bottom of the whole column including the
+name text.
+
+**Root-centered "hub" layout**: the root (Durability) sits vertically in the middle
+of the screen rather than pinned to the top, per an explicit "start the tree from
+the middle" request. Its 3 direct branches are split into two groups
+(`DigUpgradeTree.tsx`'s `upIds`) — `pickaxe_2` (Durability II, the shallowest branch:
+just Danger Sense/Scanner hanging off it) renders **above** the root; `dirt_value_1`
+(Dirt Value → Copper Vein → the ore ladder) and `durability_1` (Pickaxe → Strength →
+Bulk Click) render **below**, reading as the two "core progression" paths. Each
+group uses the `TreeRow`/`TreeBranch` pair with a `direction: 'up'|'down'` prop that
+flips which side of the node its own children row renders on (an "up" branch
+renders its children first, growing away from the root; "down" is the ordinary
+top-down order) and which edge siblings align to (`flex-end` for "up" so boxes
+bottom out toward the root, `flex-start` for "down"). This is a practical
+two-direction interpretation, not a true polar/radial layout with arbitrary angles
+— simpler to implement robustly with plain flexbox (the SVG overlay handles making
+the *lines* look right regardless), and still delivers the "hub in the middle,
+branches radiate outward" feel that was asked for. Which branch(es) go up vs. down
+is just a visual-balance call (`upIds`) — reshuffle it freely if the tree's shape
+changes again (e.g. the Dirt Value branch, now the deepest at 5 generations, may
+eventually want to be the one alone above the root instead).
+
+**Full-screen view, not a popup**: `DigUpgradeTree` renders as a genuine sibling
+screen, not an overlay/modal — `IncrementalGame.tsx` holds a local `showUpgrades`
+boolean and renders either `DigHomeScreen` or `DigUpgradeTree` full-screen while
+`phase === 'HOME'`, the same way it already swaps between `DigHomeScreen`/the
+DIGGING view/`DigRunOverOverlay`. `DigHomeScreen` never owns any popup state itself
+— it just calls `onOpenUpgrades()`.
+
+**The post-run loop goes straight to Upgrades, not back to the home screen**
+(per an explicit "smooth loop: play → cash out → skill tree → play again or
+back" request): `DigRunOverOverlay`'s button (`onContinue`, labeled "CONTINUE
+TO UPGRADES") is wired in `IncrementalGame.tsx` to dispatch `BACK_TO_HOME`
+**and** `setShowUpgrades(true)` together, so the very next render shows
+`DigUpgradeTree` directly — `DigHomeScreen` is skipped entirely on this path
+(it's still the first thing shown when Dig mode is entered fresh from
+`ModeSelect`, and still reachable from its own "⛏ UPGRADES" button). Inside
+`DigUpgradeTree`, the primary action is a prominent green **"⛏️ DIG AGAIN"**
+button (`onPlayAgain`, dispatches `START_DIG` directly — no detour through
+the home screen) with a small muted **"BACK"** text button underneath it
+(`onClose`, `setShowUpgrades(false)` → falls back to `DigHomeScreen`) as the
+secondary way out. `DigHomeScreen`'s own top-right `BackToMenuButton` (exit to
+`ModeSelect`) is still one more step past that "BACK" if the player wants to
+leave Dig mode entirely — the upgrade screen's "BACK" intentionally stays
+scoped to Dig mode's own home, not the whole app, since it's reached from two
+different contexts (fresh entry vs. post-run) and only one of them implies
+"I might want to leave Dig mode."
+
+### Dev debug panel (`DigDebugPanel.tsx`, `import.meta.env.DEV` gated)
+
+Mirrors `DebugPanel.tsx`'s "🛠 button in top bar → right-side drawer" pattern, but
+splits its writes across two different stores since Dig's persistent progression
+lives outside `DigGameState`:
+- **META section** — patches `digMeta.ts` directly via `debugSetDigMeta` (cash balance).
+- **RUN section** — patches the current `DigGameState` via the same generic
+  `{ type: 'DEBUG_PATCH'; patch: Partial<DigGameState> }` reducer case Standard uses.
+- **BOSS section** — forces `state.activeBoss` for the current level (doesn't retroactively
+  regenerate the board — a forced boss's generation-time effects, like Cave-In's bomb
+  density, only apply to boards generated *after* the force, i.e. the next level).
+- **UPGRADES section** — `debugSetUpgradeOwned(id, owned)` bypasses cost/parent gating
+  entirely, writes `digMeta.ts`, **and** live-patches `state.skills` so the effect is
+  visible in the current run immediately (still subject to the same "board-generation-time
+  effects don't retroactively apply to an already-generated board" caveat as bosses —
+  ore tiers, Danger Sense hints, and tile toughness are only rolled once, at
+  `generateDigBoard` time, so a mid-level upgrade toggle won't change tiles already on
+  the board, only the next level's).
+
+### Board escalation & charges (tuned via `scripts/dig-sim.mjs` — see its limitation note above)
+
+```typescript
+calcDigBoardDim(level) = min(9, 5 + 2×floor(level/3))    // 1-2: 5×5 | 3-5: 7×7 | 6-8: 9×9 | 9+: capped
+isDigCheckpointLevel(level) = level>0 && level%3===0      // every 3rd level: bigger board (above) + a boss (see Bosses)
+calcDigBombDensity(level) = min(0.20, 0.08 + (level-1)×0.006)   // was 0.12 base/0.008 step/0.22 max — lowered, see below
+calcDigCashBase(level, dirtValueLevel) = (dirtValueLevel>0 ? DIG_DIRT_VALUE_BY_LEVEL[dirtValueLevel-1] : 1) + (level-1)×1.2
+DIG_DIRT_VALUE_BY_LEVEL = [2, 3, 4]  // Dirt Value node's 3 levels — base is $1 unowned
+DIG_EMPTY_FRACTION = 0.30
+DIG_CLEAR_BUFFER = 2        // see Charges section above
+DIG_BASE_CHARGES = 5        // was 20 — dropped hard, see balance history below
+DIG_PICKAXE_CHARGES_BY_LEVEL = [7, 12, 15]  // Pickaxe root's 3 levels — TOTAL charges, not deltas
+DIG_PICKAXE_2_CHARGES = 8   // Pickaxe II child — flat add on top of the ladder's max
+DIG_BASE_TOUGHNESS = 2              // every tile (dirt or ore) needs this many hits by default
+DIG_DURABILITY_DIRT_TOUGHNESS = 1   // Durability node: plain Dirt only, drops to this
+```
+
+**Balance history**: the original placeholder numbers (charges=15, bomb density
+base=0.12) made a level-1 clear essentially unreachable — `dig-sim.mjs` showed the
+real bottleneck wasn't charge count at all (clear rates were flat from ~25 charges to
+100), it was that a strict 100%-clear compounds bomb-avoidance risk across ~20+
+clicks regardless of budget. Fixed with two changes together: `DIG_CLEAR_BUFFER`
+(forgives the last couple of highest-risk clicks) and a lower/gentler bomb-density
+curve. That tuning pass assumed 1 charge per tile.
+
+**Then the baseline was deliberately dropped much further** — `DIG_BASE_CHARGES`
+20→5, and every tile (dirt included) now costs `DIG_BASE_TOUGHNESS` (2) charges to
+fully mine instead of 1 (see Durability/Strength/Bulk Click above). Re-running
+`dig-sim.mjs` (its `dirtToughness` param mirrors this) shows level-1's true minimum
+cost is now ~35 charges to literally clear the level — starkly higher than even the
+fully-upgraded Pickaxe I+II budget of 21, so **clearing a level is not a realistic
+goal at the start of a run any more; it's a mid/late-run milestone unlocked by
+Durability/Strength/Pickaxe investment**. This is an intentional consequence of the
+user's explicit ask, not a bug: a 5-charge run still banks some cash (median ~$8 at
+skill=0 in the sim) from a handful of dirt digs even without clearing, since
+running out of charges auto-banks the same as a voluntary cash-out — the early game
+is now a tiny "grind a little, buy an upgrade, try again" loop rather than a
+level-clearing loop. **Flag this to the user if the opening runs feel too punishing
+once played by hand** — the sim direction is clear but, per its documented
+limitation, doesn't model real deduction, and no human playtest pass has happened
+against these exact numbers yet.
+
+### Suggested Future Ideas (still open — nothing below is built)
+
+- **Achievements/unlocks conversion for Standard mode** — still explicitly deferred,
+  not part of this mode at all.
+- **A real probability ladder for Scanner** (currently the root node does double duty
+  as "unlock + set probability," with only one further count-boosting child) if a
+  future pass wants a true 2-axis multi-tier scanner.
+- **Multi-use Bomb Deflector, Steady Hands (first-click safety), richer ore-tier
+  boss twists** — none of these from the original brainstorm made it into this pass;
+  still fair game for a future tree-expansion session.
+- **A cross-mode nod** — unlock a Standard-mode relic/flavor via a Dig milestone or
+  vice versa, tying "two games, one universe" together without merging economies.
+- **Revisit the Bulk Click model** (full-strength-per-tile vs. divided-strength) after
+  real playtesting, per the user's original note — this was implemented as a
+  judgment call, not a resolved design.
+- **Rock tiles (later levels)** — a tile type that the basic pickaxe cannot dig **at
+  all**, not just slowly. Some tiles would carry a "base required strength" threshold
+  — below it, clicking does nothing (a hard gate, distinct from toughness/hit-count,
+  which the basic pickaxe can always eventually overcome given enough clicks). Needs a
+  Strength upgrade specifically built past that threshold before Rock becomes diggable.
+- **Closed-off sections (e.g. water)** — a region of the board that's inaccessible
+  until the player digs around to find a specific valve/hole tile that releases it,
+  at which point that section becomes normally diggable. A real puzzle/gating
+  mechanic, not a stat check — would need a new board-region concept (Dig's board is
+  currently just a flat tile array with no zone/region data at all).
+- **Dynamite charges skill** — a consumable/ability that blasts a whole radius of
+  tiles at once instead of one tile per click, with two separate upgradeable axes:
+  blast radius (how many tiles) and blast strength (how much damage each one takes).
+  Distinct from Bulk Click (which is a fixed same-row splash at full strength, no
+  radius/strength split).
+- **Custom tile art (dirt / cracked dirt / ore-in-dirt images)** — the player asked
+  whether textures can be swapped for uploaded images later. Yes: `DigGrid.tsx`
+  currently renders every tile via emoji strings (`ORE_ICONS`/`ORE_COLORS` maps,
+  plus the `⛏️`/`⚠️`/`💣` literals in `DigTileContent`) — no image-import scaffolding
+  exists yet, but the pattern is already proven in Standard mode
+  (`Grid.tsx`: `import bombSrc from '../assets/bomb.png'`, then `<img src={bombSrc}>`
+  in place of an emoji). The swap is small and localized: drop image files under
+  `src/incremental/assets/` (or reuse `src/assets/`), import them, and replace the
+  relevant `<span>{emoji}</span>` in `DigTileContent`/`DigGridTile` with `<img>` tags —
+  no changes needed to `DigTile`/`DigGameState` or any logic, since tile visuals are
+  purely a render-time concern keyed off `tile.type`/`tile.oreTier`/`tile.state`.
 
 ---
 
@@ -1043,6 +1592,22 @@ that should be previewed before betting.
    affect — `state.skills` is already snapshotted into every run via `createInitialState`
 5. `SkillTree.tsx` and `DebugPanel.tsx`'s SKILLS section both iterate `SKILLS`
    automatically — no UI changes needed unless the skill needs bespoke display
+
+**New Dig upgrade node** (Incremental mode's separate tree, `src/incremental/digMeta.ts`):
+1. Add the id to the `DigUpgradeId` union in `src/incremental/types.ts`
+2. Add an entry to `DIG_UPGRADES` in `digMeta.ts` (id, `parentId` — `null` for a new
+   root, an existing node's id to branch off it — name, emoji, cost, description).
+   `defaultDigMeta()` derives its defaults straight from `DIG_UPGRADES`, so a new id
+   is automatically initialized to 0 — no separate default-value step needed.
+3. Hook `state.skills[id]` (Dig's `DigGameState.skills`, snapshotted fresh in
+   `startDig` — see Incremental Dig Mode section above for why it must be fresh,
+   not read from stale reducer state) into whichever `digLogic.ts` function the
+   upgrade should affect
+4. `DigUpgradeTree.tsx`'s `TreeBranch` is genuinely recursive (renders a node, then
+   a row of recursively-rendered children) — no layout changes needed regardless of
+   how deep or wide the new node makes the tree, it just needs the right `parentId`
+5. `DigDebugPanel.tsx`'s UPGRADES section iterates `DIG_UPGRADES` automatically too —
+   no debug-panel changes needed either
 
 ---
 
