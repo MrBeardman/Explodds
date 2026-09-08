@@ -5,14 +5,14 @@ import {
   handleBustFlashEnd, getMinBet, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
   maxPlayerFlags,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, interestRate,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate,
   resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from '../gameLogic';
 import { calcTileBaseCash, ALL_CONSUMABLES } from '../constants';
 import { BET_STEP } from '../constants';
 import { playSfx, isMuted, setMuted } from '../sound';
-import { awardPrestige } from '../meta';
+import { recordRunEnd, type DailyRecord } from '../meta';
 
 import { StartScreen }         from './StartScreen';
 import { SkillTree }           from './SkillTree';
@@ -34,7 +34,7 @@ import { BackToMenuButton }    from './BackToMenuButton';
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 type Action =
-  | { type: 'START_GAME' }
+  | { type: 'START_GAME'; daily?: boolean }
   | { type: 'SELECT_EVENT_CARD'; id: EventCardId }
   | { type: 'CONFIRM_BOSS' }
   | { type: 'SET_BET'; amount: number }
@@ -72,17 +72,15 @@ function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
 
     case 'START_GAME': {
-      const fresh = createInitialState();
+      const fresh = createInitialState({ daily: action.daily });
       const events = drawEventCards(fresh);
       return { ...fresh, phase: 'EVENT_CARD', event_card_options: events };
     }
 
-    case 'SELECT_EVENT_CARD': {
-      // Modifiers stack permanently for the whole run — append, never replace
-      const next: GameState = { ...state, active_events: [...state.active_events, action.id] };
-      // Greed Mode can raise the min bet above the wallet — resolve instead of soft-locking
-      return toBetPhase(next);
-    }
+    case 'SELECT_EVENT_CARD':
+      // Lasts this cycle; a second pick of the same card makes it a permanent trait.
+      // (Greed Mode can raise the min bet above the wallet — toBetPhase resolves that.)
+      return selectEventCard(state, action.id);
 
     case 'CONFIRM_BOSS': {
       if (state.phase !== 'BOSS_INTRO') return state;
@@ -321,6 +319,7 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
   const [bustRevealReady, setBustRevealReady] = useState(false);
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [endGameConfirm, setEndGameConfirm] = useState(false);
+  const [runEnd, setRunEnd] = useState<{ newUnlocks: RelicId[]; daily: DailyRecord | null } | null>(null);
   const prestigeAwarded = useRef(false);
 
   // END GAME needs a second click to confirm — first click arms it, second
@@ -339,10 +338,14 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
   useEffect(() => {
     if (state.phase === 'GAME_OVER' && !prestigeAwarded.current) {
       prestigeAwarded.current = true;
-      awardPrestige(state.cycles_survived);
+      // Prestige + relic unlocks + daily record, persisted once; what was new
+      // is kept for the Game Over screen to announce. (setState here is
+      // deliberate: the localStorage write must happen exactly once per run.)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRunEnd(recordRunEnd({ cycles_survived: state.cycles_survived, run_stats: state.run_stats, is_daily: state.is_daily }));
     }
     if (state.phase !== 'GAME_OVER') prestigeAwarded.current = false;
-  }, [state.phase, state.cycles_survived]);
+  }, [state.phase, state.cycles_survived, state.run_stats, state.is_daily]);
 
   const toggleMute = () => {
     const m = !muted;
@@ -374,6 +377,7 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
       <div className="relative">
         <StartScreen
           onStart={() => { playSfx('click'); dispatch({ type: 'START_GAME' }); }}
+          onStartDaily={() => { playSfx('click'); dispatch({ type: 'START_GAME', daily: true }); }}
           onOpenSkills={() => setShowSkillTree(true)}
         />
         <div className="absolute top-4 right-4">
@@ -529,7 +533,7 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
       )}
 
       {state.phase === 'GAME_OVER' && (
-        <GameOver state={state} onRestart={() => dispatch({ type: 'RESTART' })} />
+        <GameOver state={state} newUnlocks={runEnd?.newUnlocks ?? []} daily={runEnd?.daily ?? null} onRestart={() => { setRunEnd(null); dispatch({ type: 'RESTART' }); }} />
       )}
 
       {debugOpen && (

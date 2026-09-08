@@ -88,11 +88,32 @@ Nobody is immortal: the best single runs across all profiles top out in the
 plus opening, bet $16): bust 15–33% and 92–70% provable clicks across 4–8
 bombs — the intended skill regime.
 
-## Still open (from the review)
-- Difficulty axes beyond bomb count (board growth to 6×6/7×7, bomb patterns,
-  click budgets) — the grid is still hardcoded 5×5.
-- Split event cards into a few permanent traits + cycle-scoped draws.
-- Build archetypes with a spine each (Deduction / Gambler / Combo / Banker);
-  more information-shaped relics (Compass, Assayer).
-- Seeded daily run + unlocks.
-- Human playtest pass: the bots are perfect or noisy deducers, not people.
+## Second pass (same session)
+
+- **Board growth** is the second difficulty axis: 5×5 for cycles 1–5, 6×6 for
+  6–9, 7×7 from 10 (`BOARD_GROWTH`). Bombs follow a density curve on the
+  growing board (0.22 at cycle 6, +0.02/cycle, cap 0.34) instead of a flat cap.
+  Every index/row/col conversion now goes through `boardCols(board)`.
+  **The Mason** boss lays bombs in touching pairs (bomb-pattern axis).
+- **Event cards** are cycle-scoped; picking the same card twice makes it a
+  permanent trait (max 3). `active_events` is the derived union.
+- **Archetype relics**: Second Sight, Cartographer (Deduction); Double Down,
+  Loaded Dice (Gambler); Vault (Banker). Gut Feeling now ends the attempt as a
+  forced cashout instead of relocating the bomb (it was carrying runs alone).
+- **Unlocks**: Double Down, Second Sight, Vault and Cartographer start locked
+  and are unlocked by feats (`UNLOCKABLES` in meta.ts), announced on Game Over
+  and listed on the Start Screen. **Daily run**: same seed for everyone per
+  UTC day, best-of-day kept in meta.
+
+Bot numbers after this pass (median / p90, `npm run bots`): random 2 / 2; noisy
+solver 3 / 4; perfect solver min bet 7 / 10; 30% bets 6 / 14; collateral play
+14 / 22; + Ledger 13 / 24; + Cartographer 14 / 28; + Gut Feeling 15 / 29.
+Gut Feeling is the strongest single relic for a perfect deducer (it turns one
+forced guess per cycle into a safe cashout) — it is a 16🎫 legendary for that
+reason; a human who guesses more than once per cycle gets far less out of it.
+
+## Still open
+- Compass / Assayer-style relics that change the *shape* of numbers (skipped:
+  Compass is a sidegrade, Assayer needs a second number on the tile).
+- Human playtest pass: the bots are perfect or noisy deducers, not people —
+  the noisy-solver numbers (3–4 cycles) are the ones most worth checking by hand.

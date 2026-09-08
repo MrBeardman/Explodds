@@ -9,11 +9,15 @@
 //
 // Pure functions only — no React, no state mutation.
 
-import { GRID_COLS, GRID_SIZE } from './constants';
+import { GRID_COLS } from './constants';
 import { mulberry32 } from './rng';
 import type { GameState, Tile } from './types';
 
-const ROWS = GRID_SIZE / GRID_COLS;
+// Boards are always square; the column count is derived from the board itself
+// so every function here works for 5×5, 6×6 and 7×7 alike.
+export function boardCols(board: Tile[]): number {
+  return board.length > 0 ? Math.round(Math.sqrt(board.length)) : GRID_COLS;
+}
 
 // ─── Neighborhoods ───────────────────────────────────────────────────────────
 
@@ -26,31 +30,31 @@ function offsetsFor(state: Pick<GameState, 'active_boss'>): Array<[number, numbe
   return state.active_boss === 'mirror' ? OFFSETS_DIAG : OFFSETS_8;
 }
 
-function neighborsWith(index: number, offsets: Array<[number, number]>): number[] {
-  const row = Math.floor(index / GRID_COLS), col = index % GRID_COLS;
+function neighborsWith(index: number, cols: number, offsets: Array<[number, number]>): number[] {
+  const row = Math.floor(index / cols), col = index % cols;
   const out: number[] = [];
   for (const [dr, dc] of offsets) {
     const r = row + dr, c = col + dc;
-    if (r < 0 || r >= ROWS || c < 0 || c >= GRID_COLS) continue;
-    out.push(r * GRID_COLS + c);
+    if (r < 0 || r >= cols || c < 0 || c >= cols) continue;
+    out.push(r * cols + c);
   }
   return out;
 }
 
 // True 8-neighborhood — used by board mechanics (cascade, opening relocation).
-export function neighbors8(index: number): number[] {
-  return neighborsWith(index, OFFSETS_8);
+export function neighbors8(index: number, cols: number): number[] {
+  return neighborsWith(index, cols, OFFSETS_8);
 }
 
 // The neighborhood the NUMBERS are counted over (diagonals only under Mirror).
-export function numberNeighbors(state: Pick<GameState, 'active_boss'>, index: number): number[] {
-  return neighborsWith(index, offsetsFor(state));
+export function numberNeighbors(state: Pick<GameState, 'active_boss'>, board: Tile[], index: number): number[] {
+  return neighborsWith(index, boardCols(board), offsetsFor(state));
 }
 
 // Honest count of bombs around `index`, over the number-neighborhood in force.
 export function trueNumber(state: Pick<GameState, 'active_boss'>, board: Tile[], index: number): number {
   let n = 0;
-  for (const j of numberNeighbors(state, index)) if (board[j].type === 'bomb') n++;
+  for (const j of numberNeighbors(state, board, index)) if (board[j].type === 'bomb') n++;
   return n;
 }
 
@@ -61,23 +65,25 @@ export function trueNumber(state: Pick<GameState, 'active_boss'>, board: Tile[],
 // per attempt so it's stable for the whole attempt. Players are told a liar
 // exists, not where — a "proven" click that trusts the lie can still bust.
 
-export function liarTile(state: Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining'>): { index: number; delta: 1 | -1 } | null {
+export function liarTile(state: Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining'>, tileCount: number): { index: number; delta: 1 | -1 } | null {
   if (state.active_boss !== 'liar') return null;
   const attemptKey = (3 - state.attempts_remaining) + 1;
   const rng = mulberry32(state.seed + state.cycle_number * 53 + attemptKey * 17);
-  return { index: Math.floor(rng() * GRID_SIZE), delta: rng() < 0.5 ? 1 : -1 };
+  return { index: Math.floor(rng() * tileCount), delta: rng() < 0.5 ? 1 : -1 };
 }
 
 // ─── What the player sees ────────────────────────────────────────────────────
 
-type ShownState = Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining'>;
+type ShownState = Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining' | 'relics'>;
 
-function tileShowsNumber(state: Pick<GameState, 'active_boss'>, tile: Tile): boolean {
+function tileShowsNumber(state: Pick<GameState, 'active_boss' | 'relics'>, tile: Tile): boolean {
   if (tile.state === 'empty_revealed') return true;
   if (tile.state === 'revealed' && tile.type === 'symbol') {
     // Blackout: symbol tiles go dark — only empties keep their numbers
     return state.active_boss !== 'blackout';
   }
+  // Second Sight relic: known-safe (hinted) tiles show their number unrevealed
+  if (tile.state === 'hinted' && tile.type !== 'bomb') return state.relics.includes('second_sight');
   return false;
 }
 
@@ -87,9 +93,9 @@ export function displayedNumber(state: ShownState, board: Tile[], index: number)
   const tile = board[index];
   if (!tile || !tileShowsNumber(state, tile)) return null;
   let n = trueNumber(state, board, index);
-  const liar = liarTile(state);
+  const liar = liarTile(state, board.length);
   if (liar && liar.index === index) {
-    const cap = numberNeighbors(state, index).length;
+    const cap = numberNeighbors(state, board, index).length;
     n = Math.max(0, Math.min(cap, n + liar.delta));
   }
   return n;
@@ -99,11 +105,12 @@ export function displayedNumber(state: ShownState, board: Tile[], index: number)
 // are computed too but not shown — rows alone keep the relic strong without
 // turning every board into a fully determined puzzle.
 export function rowColTotals(board: Tile[]): { rows: number[]; cols: number[] } {
-  const rows = Array(ROWS).fill(0), cols = Array(GRID_COLS).fill(0);
+  const n = boardCols(board);
+  const rows = Array(n).fill(0), cols = Array(n).fill(0);
   for (const t of board) {
     if (t.type !== 'bomb') continue;
-    rows[Math.floor(t.index / GRID_COLS)]++;
-    cols[t.index % GRID_COLS]++;
+    rows[Math.floor(t.index / n)]++;
+    cols[t.index % n]++;
   }
   return { rows, cols };
 }
@@ -123,7 +130,7 @@ export interface Deduction {
   hasInfo: boolean;    // at least one number is visible on the board
 }
 
-type AnalyzeState = ShownState & Pick<GameState, 'relics' | 'bombs_this_attempt'>;
+type AnalyzeState = ShownState & Pick<GameState, 'bombs_this_attempt'>;
 
 export function analyzeBoard(state: AnalyzeState, board: Tile[]): Deduction {
   const hidden = new Set<number>();
@@ -143,13 +150,14 @@ export function analyzeBoard(state: AnalyzeState, board: Tile[]): Deduction {
     const n = displayedNumber(state, board, t.index);
     if (n === null) continue;
     hasInfo = true;
-    const hs = numberNeighbors(state, t.index).filter(j => hidden.has(j) || bombs.has(j));
+    const hs = numberNeighbors(state, board, t.index).filter(j => hidden.has(j) || bombs.has(j));
     if (hs.length) cons.push([n, hs]);
   }
   if (state.relics.includes('ledger')) {
+    const size = boardCols(board);
     const { rows } = rowColTotals(board);
-    for (let r = 0; r < ROWS; r++) {
-      const cells = Array.from({ length: GRID_COLS }, (_, c) => r * GRID_COLS + c).filter(j => hidden.has(j) || bombs.has(j));
+    for (let r = 0; r < size; r++) {
+      const cells = Array.from({ length: size }, (_, c) => r * size + c).filter(j => hidden.has(j) || bombs.has(j));
       if (cells.length) cons.push([rows[r], cells]);
     }
   }

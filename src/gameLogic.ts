@@ -1,5 +1,5 @@
 import {
-  GRID_SIZE, GRID_COLS, SYMBOLS, ALL_CONSUMABLES, ALL_RELICS,
+  SYMBOLS, ALL_CONSUMABLES, ALL_RELICS,
   STARTING_WALLET, MAX_SHOP_ITEMS, PLACEABLE_CONSUMABLES, EVENT_CARDS,
   BOSSES, BOSS_REWARD_TICKETS, calcDeadline, calcBombs, calcTileBaseCash,
   MIN_BET_BASE, MIN_BET_PER_CYCLE, GREED_MODE_MIN_BET,
@@ -11,13 +11,14 @@ import {
   HUGE_PACK_CHOICE_COUNT, HUGE_PACK_CHANCE, HUGE_PACK_PRICE_MULT,
   PACK_PICK_COUNT, HUGE_PACK_PICK_COUNT,
   RELIC_CASE_BASE_PRICE, RELIC_CASE_PRICE_STEP, MAX_BONUS_RELIC_SLOTS,
-  MAX_ACTIVE_RELICS, BET_STEP, CASCADE_LEVEL1_CAP,
+  MAX_ACTIVE_RELICS, BET_STEP, CASCADE_LEVEL1_CAP, calcBoardCols,
   DEADLINE_WALLET_CHASE, COLLATERAL_DEPOSIT_FRAC, COLLATERAL_BOMB_RELIEF,
   PROFITABLE_EARNINGS_RATIO, TICKETS_FLAWLESS, FLAWLESS_MIN_PROVEN,
   DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, ECHO_REVEALED_EMPTIES, CURFEW_CLICKS,
   MULT_GAIN_BASE, MULT_GAIN_PER_BOMB, STREAK_5_MULT, STREAK_10_MULT, STREAK_15_CASH,
+  MAX_TRAITS, LOCKED_RELIC_IDS,
 } from './constants';
-import { analyzeBoard, neighbors8, trueNumber } from './deduction';
+import { analyzeBoard, neighbors8, trueNumber, boardCols } from './deduction';
 import type {
   GameState, Tile, TileType, TileState, SymbolId,
   EventCardId, BossId, ComboDisplay, BoostAxis, SymbolBoost,
@@ -25,7 +26,7 @@ import type {
   ResultLine, ResultsBreakdown,
 } from './types';
 import { mulberry32, weightedChoice, rngShuffle, newSeed } from './rng';
-import { loadMeta } from './meta';
+import { loadMeta, dailySeed } from './meta';
 
 // ─── Bosses (every 3rd cycle) ─────────────────────────────────────────────────
 
@@ -76,8 +77,10 @@ export function generateBoard(state: GameState): Tile[] {
   const attemptKey = (3 - state.attempts_remaining) + 1;
   const rng = mulberry32(state.seed + state.cycle_number * 1000 + attemptKey * 100);
 
-  const bombCount = state.bombs_this_attempt;
-  const remaining = GRID_SIZE - bombCount;
+  const cols = state.board_cols;
+  const size = cols * cols;
+  const bombCount = Math.min(state.bombs_this_attempt, size - 2);
+  const remaining = size - bombCount;
 
   // Compute empty count
   let emptyCount: number;
@@ -100,9 +103,9 @@ export function generateBoard(state: GameState): Tile[] {
     ...Array(symbolCount).fill('symbol'),
     ...Array(emptyCount).fill('empty'),
   ] as TileType[];
-  const shuffled = rngShuffle(rng, Array.from({ length: GRID_SIZE }, (_, i) => i));
+  const shuffled = rngShuffle(rng, Array.from({ length: size }, (_, i) => i));
 
-  const tiles: Tile[] = Array.from({ length: GRID_SIZE }, (_, i) => ({
+  const tiles: Tile[] = Array.from({ length: size }, (_, i) => ({
     index: i,
     state: 'hidden' as TileState,
     type: 'empty' as TileType,
@@ -113,8 +116,33 @@ export function generateBoard(state: GameState): Tile[] {
   }));
 
   // Assign types: shuffled[i] gets types[i]
-  for (let i = 0; i < GRID_SIZE; i++) {
+  for (let i = 0; i < size; i++) {
     tiles[shuffled[i]].type = types[i];
+  }
+
+  // The Mason boss: bombs are laid in touching pairs — re-place them so every
+  // bomb has an orthogonal bomb neighbour where possible (same count).
+  if (state.active_boss === 'mason') {
+    for (const t of tiles) if (t.type === 'bomb') t.type = 'symbol';
+    let placed = 0;
+    const order = rngShuffle(rng, tiles.map(t => t.index));
+    for (const idx of order) {
+      if (placed >= bombCount) break;
+      if (tiles[idx].type === 'bomb') continue;
+      const mates = neighbors8(idx, cols).filter(j =>
+        (Math.floor(j / cols) === Math.floor(idx / cols) || j % cols === idx % cols) && tiles[j].type !== 'bomb',
+      );
+      if (placed + 1 < bombCount && mates.length > 0) {
+        const mate = mates[Math.floor(rng() * mates.length)];
+        tiles[idx].type = 'bomb'; tiles[mate].type = 'bomb'; placed += 2;
+      } else {
+        tiles[idx].type = 'bomb'; placed += 1;
+      }
+    }
+    // Non-bomb tiles keep their symbol/empty split: re-deal types to the rest
+    const rest = tiles.filter(t => t.type !== 'bomb');
+    const restTypes = rngShuffle(rng, [...Array(Math.min(symbolCount, rest.length)).fill('symbol'), ...Array(Math.max(0, rest.length - symbolCount)).fill('empty')] as TileType[]);
+    rest.forEach((t, i) => { t.type = restTypes[i]; });
   }
 
   // Assign symbols to symbol tiles
@@ -152,8 +180,10 @@ export function generateBoard(state: GameState): Tile[] {
   }
 
   // Echo relic: after a bust, the next board starts with a couple of numbers
-  // already on it — a deduction foothold instead of a cold restart
-  if (state.relics.includes('echo') && state.last_attempt_busted) {
+  // already on it — a deduction foothold instead of a cold restart.
+  // Cartographer (legendary unlock): every board does. (A bomb-free 3×3 opening
+  // was tried for it and made the perfect-deducer bot immortal.)
+  if (state.relics.includes('cartographer') || (state.relics.includes('echo') && state.last_attempt_busted)) {
     const empties = tiles.filter(t => t.type === 'empty' && t.state === 'hidden');
     rngShuffle(rng, empties).slice(0, ECHO_REVEALED_EMPTIES).forEach(t => { tiles[t.index].state = 'empty_revealed'; });
   }
@@ -170,17 +200,8 @@ export function generateBoard(state: GameState): Tile[] {
 // ─── Adjacency (minesweeper numbers on empty tiles) ──────────────────────────
 
 export function adjacentBombCount(board: Tile[], index: number): number {
-  const row = Math.floor(index / GRID_COLS);
-  const col = index % GRID_COLS;
   let n = 0;
-  for (let dr = -1; dr <= 1; dr++) {
-    for (let dc = -1; dc <= 1; dc++) {
-      if (dr === 0 && dc === 0) continue;
-      const r = row + dr, c = col + dc;
-      if (r < 0 || r >= GRID_SIZE / GRID_COLS || c < 0 || c >= GRID_COLS) continue;
-      if (board[r * GRID_COLS + c].type === 'bomb') n++;
-    }
-  }
+  for (const j of neighbors8(index, boardCols(board))) if (board[j].type === 'bomb') n++;
   return n;
 }
 
@@ -211,31 +232,31 @@ export function toBetPhase(state: GameState): GameState {
 
 // ─── Combo helpers ────────────────────────────────────────────────────────────
 
-function hasCherryRowCol(cherryIndices: number[]): boolean {
+function hasCherryRowCol(cherryIndices: number[], cols: number): boolean {
   const s = new Set(cherryIndices);
-  for (let r = 0; r < 5; r++) {
+  for (let r = 0; r < cols; r++) {
     let n = 0;
-    for (let c = 0; c < 5; c++) {
-      n = s.has(r * 5 + c) ? n + 1 : 0;
+    for (let c = 0; c < cols; c++) {
+      n = s.has(r * cols + c) ? n + 1 : 0;
       if (n >= 3) return true;
     }
   }
-  for (let c = 0; c < 5; c++) {
+  for (let c = 0; c < cols; c++) {
     let n = 0;
-    for (let r = 0; r < 5; r++) {
-      n = s.has(r * 5 + c) ? n + 1 : 0;
+    for (let r = 0; r < cols; r++) {
+      n = s.has(r * cols + c) ? n + 1 : 0;
       if (n >= 3) return true;
     }
   }
   return false;
 }
 
-function hasAdjacentBananas(bananaIndices: number[]): boolean {
+function hasAdjacentBananas(bananaIndices: number[], cols: number): boolean {
   const s = new Set(bananaIndices);
   for (const idx of bananaIndices) {
-    const c = idx % 5;
-    if (c < 4 && s.has(idx + 1)) return true;
-    if (idx + 5 < GRID_SIZE && s.has(idx + 5)) return true;
+    const c = idx % cols;
+    if (c < cols - 1 && s.has(idx + 1)) return true;
+    if (idx + cols < cols * cols && s.has(idx + cols)) return true;
   }
   return false;
 }
@@ -243,12 +264,13 @@ function hasAdjacentBananas(bananaIndices: number[]): boolean {
 // ─── Magnet: nearest safe hidden tile ────────────────────────────────────────
 
 function magnetReveal(board: Tile[], lastIdx: number): number | null {
+  const cols = boardCols(board);
   const candidates = board
     .filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted'))
     .map(t => ({
       id: t.index,
-      dist: Math.abs(Math.floor(t.index / 5) - Math.floor(lastIdx / 5))
-          + Math.abs((t.index % 5) - (lastIdx % 5)),
+      dist: Math.abs(Math.floor(t.index / cols) - Math.floor(lastIdx / cols))
+          + Math.abs((t.index % cols) - (lastIdx % cols)),
     }))
     .sort((a, b) => a.dist - b.dist);
   return candidates[0]?.id ?? null;
@@ -292,20 +314,12 @@ function floodFillReveal(state: GameState, board: Tile[], origin: number, maxTil
 
     // A shown 0 (over the number-neighborhood in force) expands
     if (t.type === 'empty' && trueNumber(state, board, idx) === 0) {
-      const row = Math.floor(idx / GRID_COLS);
-      const col = idx % GRID_COLS;
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          if (dr === 0 && dc === 0) continue;
-          const r = row + dr, c = col + dc;
-          if (r < 0 || r >= GRID_SIZE / GRID_COLS || c < 0 || c >= GRID_COLS) continue;
-          const nIdx = r * GRID_COLS + c;
-          const nt = board[nIdx];
-          if (visited.has(nIdx) || nt.type === 'bomb') continue;
-          if (nt.state === 'revealed' || nt.state === 'empty_revealed') continue;
-          visited.add(nIdx);
-          queue.push(nIdx);
-        }
+      for (const nIdx of neighbors8(idx, boardCols(board))) {
+        const nt = board[nIdx];
+        if (visited.has(nIdx) || nt.type === 'bomb') continue;
+        if (nt.state === 'revealed' || nt.state === 'empty_revealed') continue;
+        visited.add(nIdx);
+        queue.push(nIdx);
       }
     }
   }
@@ -341,6 +355,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
   const symbolMod = getSymbolMod(symbol, state);
   let cash = baseCash * symbolMod * acc.mult;
   if (state.active_events.includes('danger_pay')) cash *= 1.4;
+  if (state.relics.includes('loaded_dice')) cash *= 1.25;
   const luckyBonus = tile.consumable === 'lucky_tile' ? 5 : 0;
   cash = parseFloat(cash.toFixed(2));
 
@@ -425,7 +440,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   // Cherry Rush
   if (!triggered.includes('cherry_rush')) {
     const cherryIdxs = board.filter(t => t.state === 'revealed' && t.symbol === 'cherry').map(t => t.index);
-    if (hasCherryRowCol(cherryIdxs)) {
+    if (hasCherryRowCol(cherryIdxs, boardCols(board))) {
       const reward = state.relics.includes('cherry_picker') ? 20 : 12;
       newEarnings += reward;
       triggered.push('cherry_rush');
@@ -437,7 +452,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   // Banana Split
   if (!triggered.includes('banana_split')) {
     const bananaIdxs = board.filter(t => t.state === 'revealed' && t.symbol === 'banana').map(t => t.index);
-    if (hasAdjacentBananas(bananaIdxs)) {
+    if (hasAdjacentBananas(bananaIdxs, boardCols(board))) {
       const mult = state.relics.includes('banana_baron') ? 3 : 2;
       const bonusAmt = acc.bananaEarnings.reduce((s, e) => s + e * (mult - 1), 0);
       newEarnings += parseFloat(bonusAmt.toFixed(2));
@@ -487,10 +502,12 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   }
 
   // Perfect Clear — every non-bomb tile on the board revealed
+  let runStats = state.run_stats;
   if (!triggered.includes('perfect_clear') && isBoardFullyCleared(board)) {
     const bonus = parseFloat((newEarnings * PERFECT_CLEAR_BONUS_PCT).toFixed(2));
     newEarnings += bonus;
     triggered.push('perfect_clear');
+    runStats = { ...runStats, perfect_clear_best_cycle: Math.max(runStats.perfect_clear_best_cycle, state.cycle_number) };
     display.push({ text: '🏆 PERFECT CLEAR!', amount: `+${Math.round(PERFECT_CLEAR_BONUS_PCT * 100)}%`, color: '#4ade80', id: comboId++ });
   }
 
@@ -535,6 +552,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
     highest_multiplier: newHighMult,
     best_streak: newBestStreak,
     boosts: synergistBoosts.length > 0 ? [...state.boosts, ...synergistBoosts] : state.boosts,
+    run_stats: runStats,
   };
 }
 
@@ -577,10 +595,10 @@ function relocateBombs(state: GameState, board: Tile[], protect: number[]): numb
 // handed over for free, and the bot playtest showed a perfect deducer then
 // proves nearly everything regardless of bomb count — the skill layer needs
 // tiles that must be reasoned for. Level 2 instead removes the cascade cap.
-export function openingTiles(index: number, cascadeLevel: number): number[] {
+export function openingTiles(index: number, cascadeLevel: number, cols: number): number[] {
   if (cascadeLevel <= 0) return [index];
-  const row = Math.floor(index / GRID_COLS), col = index % GRID_COLS;
-  return [index, ...neighbors8(index).filter(j => Math.floor(j / GRID_COLS) === row || j % GRID_COLS === col)];
+  const row = Math.floor(index / cols), col = index % cols;
+  return [index, ...neighbors8(index, cols).filter(j => Math.floor(j / cols) === row || j % cols === col)];
 }
 
 // ─── Probe consumable ─────────────────────────────────────────────────────────
@@ -630,7 +648,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   const isOpening = state.clicks_this_attempt === 0;
   const free = state.clicks_this_attempt < guaranteedSafeClicks;
   if (free) {
-    const protect = isOpening ? openingTiles(tileIndex, state.skills.cascade) : [tileIndex];
+    const protect = isOpening ? openingTiles(tileIndex, state.skills.cascade, boardCols(newBoard)) : [tileIndex];
     bombsThisAttempt -= relocateBombs(state, newBoard, protect);
   }
 
@@ -639,10 +657,15 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   let gutUsed = state.gut_feeling_used;
   if (!free) {
     proven = analyzeBoard(state, state.board).safe.has(tileIndex);
-    // Gut Feeling relic: once per cycle, a guess that would bust is spared
+    // Gut Feeling relic: once per cycle, a guess that would bust is spared —
+    // the bomb is marked ⚠ and the attempt ends as a cashout for HALF the
+    // winnings (stake kept, remaining clicks forfeited). Deliberately NOT a free
+    // relocation: that made every cycle's first guess risk-free and the bot
+    // playtest showed the relic alone carrying runs past 25 cycles.
     if (!proven && newBoard[tileIndex].type === 'bomb' && state.relics.includes('gut_feeling') && !gutUsed) {
-      bombsThisAttempt -= relocateBombs(state, newBoard, [tileIndex]);
-      gutUsed = true;
+      newBoard[tileIndex].state = 'flagged';
+      const halved = parseFloat((state.attempt_earnings * 0.5).toFixed(2));
+      return handleCashout({ ...state, board: newBoard, attempt_earnings: halved, gut_feeling_used: true, guess_clicks: state.guess_clicks + 1, deduction_streak: 0 });
     }
   }
   const guess = !free && !proven;
@@ -693,6 +716,11 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     // rewards the deduction itself, not just surviving the attempt.
     const flagResult = calcFlagBonus(state);
     newWallet = parseFloat((newWallet + flagResult.bonus).toFixed(2));
+
+    // Vault relic: deposited cash still earns half its interest on a bust
+    if (state.relics.includes('vault')) {
+      newWallet = parseFloat((newWallet + state.deposited * interestRate(state) * 0.5).toFixed(2));
+    }
 
     return {
       ...state,
@@ -904,12 +932,13 @@ export function calcFlagBonus(state: GameState): { correct: number; bonus: numbe
 
 function applyScanner(state: GameState, tileIndex: number): GameState {
   const axis = state.pending_scanner_axis!;
-  const row = Math.floor(tileIndex / GRID_COLS);
-  const col = tileIndex % GRID_COLS;
+  const cols = boardCols(state.board);
+  const row = Math.floor(tileIndex / cols);
+  const col = tileIndex % cols;
 
   const newBoard = state.board.map((t) => {
-    const tRow = Math.floor(t.index / GRID_COLS);
-    const tCol = t.index % GRID_COLS;
+    const tRow = Math.floor(t.index / cols);
+    const tCol = t.index % cols;
     const match = axis === 'row' ? tRow === row : tCol === col;
     if (!match || t.state === 'revealed' || t.state === 'bomb_hit' || t.state === 'empty_revealed') return t;
     if (t.type === 'bomb') return { ...t, state: 'revealed' as TileState };
@@ -977,6 +1006,11 @@ export function handleCashout(state: GameState): GameState {
     earnings = parseFloat((earnings * 1.5).toFixed(2));
   }
 
+  // Double Down relic: a bet of at least half the pre-bet wallet pays ×1.3
+  if (state.relics.includes('double_down') && state.current_bet >= (state.wallet + state.current_bet) * 0.5) {
+    earnings = parseFloat((earnings * 1.3).toFixed(2));
+  }
+
   // Greed Chip relic: +$3 flat
   if (state.relics.includes('greed_chip')) earnings += 3;
 
@@ -1009,8 +1043,10 @@ export function handleCashout(state: GameState): GameState {
     { label: 'Successful cashout', amount: TICKETS_SUCCESSFUL_CASHOUT },
   ];
   if (earnings >= state.current_bet * PROFITABLE_EARNINGS_RATIO) ticketLines.push({ label: 'Profitable clear', amount: TICKETS_PROFITABLE });
+  let runStats = state.run_stats;
   if (state.guess_clicks === 0 && state.proven_clicks >= FLAWLESS_MIN_PROVEN) {
     ticketLines.push({ label: `🧠 Flawless (${state.proven_clicks} proven, 0 guesses)`, amount: TICKETS_FLAWLESS });
+    runStats = { ...runStats, best_flawless_proven: Math.max(runStats.best_flawless_proven, state.proven_clicks) };
   }
   if (state.relics.includes('ticket_printer')) ticketLines.push({ label: 'Ticket Printer', amount: 2 });
   const ticketBonus = ticketLines.reduce((s, l) => s + l.amount, 0);
@@ -1026,6 +1062,7 @@ export function handleCashout(state: GameState): GameState {
   const baseState: Partial<GameState> = {
     wallet: newWallet,
     tickets: newTickets,
+    run_stats: runStats,
     total_earned: newTotalEarned,
     interest_earned_this_cycle: newInterestEarned,
     attempts_remaining: newAttempts,
@@ -1115,6 +1152,7 @@ export function resolveCycleSuccess(state: GameState): GameState {
     tickets: state.tickets + TICKETS_PAY_IN_FULL + bossTickets,
     phase: 'SHOP',
     cycles_survived: state.cycles_survived + 1,
+    run_stats: state.active_boss !== null ? { ...state.run_stats, bosses_beaten: state.run_stats.bosses_beaten + 1 } : state.run_stats,
     shop_consumables: shop.consumables,
     shop_relics: shop.relics,
     shop_packs: generatePackSlots(state),
@@ -1135,6 +1173,7 @@ export function resolveCycleFailure(state: GameState): GameState {
 export function effectiveBombs(state: GameState, bet: number, wallet: number): number {
   let bombs = calcBombs(bet, wallet, state.cycle_number);
   if (state.active_events.includes('danger_pay')) bombs = Math.min(bombs + 3, 24);
+  if (state.relics.includes('loaded_dice')) bombs += 1;
   // High Roller relic: big bets get 2 fewer bombs
   if (state.relics.includes('high_roller') && bet >= wallet * 0.5) {
     bombs = Math.max(1, bombs - 2);
@@ -1248,7 +1287,7 @@ export function generateShop(state: GameState): {
   const shuffledCons = rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_SHOP_ITEMS);
   const shuffledRels = rngShuffle(
     rng,
-    ALL_RELICS.map(r => ({
+    relicPool(state).map(r => ({
       ...r,
       owned: state.relics.includes(r.id),
       sold: false,
@@ -1268,11 +1307,16 @@ export function rerollConsumables(state: GameState): ShopConsumableItem[] {
   return rngShuffle(rng, [...ALL_CONSUMABLES]).slice(0, MAX_SHOP_ITEMS).map(c => ({ ...c, sold: false }));
 }
 
+// Locked relics (LOCKED_RELIC_IDS) only enter the pool once unlocked across runs
+function relicPool(state: GameState): ShopRelicItem[] {
+  return ALL_RELICS.filter(r => !LOCKED_RELIC_IDS.includes(r.id) || state.unlocked_relics.includes(r.id));
+}
+
 export function rerollRelics(state: GameState): ShopRelicItem[] {
   const rng = mulberry32(state.seed + state.cycle_number * 777 + 1999);
   return rngShuffle(
     rng,
-    ALL_RELICS.map(r => ({ ...r, owned: state.relics.includes(r.id), sold: false }))
+    relicPool(state).map(r => ({ ...r, owned: state.relics.includes(r.id), sold: false }))
   )
     .filter(r => !r.owned)
     .slice(0, MAX_SHOP_ITEMS);
@@ -1297,13 +1341,16 @@ export function startNextCycle(state: GameState): GameState {
     // Boss cycles skip the event pick — the boss rule IS the modifier
     phase: boss !== null ? 'BOSS_INTRO' : 'EVENT_CARD',
     cycle_number: nextCycle,
+    board_cols: calcBoardCols(nextCycle),
     deadline: nextDeadline,
     deposited: 0,
     interest_earned_this_cycle: 0,
     attempts_remaining: boss === 'short_fuse' ? 2 : 3,
     bomb_suit_used: false,
     lucky_board_used: false,
-    // active_events is NOT reset — modifiers stack permanently for the whole run
+    // Cycle-scoped picks expire; permanent traits carry on
+    cycle_events: [],
+    active_events: [...state.traits],
     active_boss: boss,
     event_card_options: eventOptions,
     pending_pack_choices: null,
@@ -1345,14 +1392,33 @@ export function startNextCycle(state: GameState): GameState {
 // the player has collected them all.
 export function drawEventCards(state: GameState, forCycle?: number): EventCardId[] {
   const rng = mulberry32(state.seed + (forCycle ?? state.cycle_number) * 333);
-  const available = EVENT_CARDS.map(c => c.id).filter(id => !state.active_events.includes(id));
+  const available = EVENT_CARDS.map(c => c.id).filter(id => !state.traits.includes(id));
   const pool = available.length >= 3 ? available : EVENT_CARDS.map(c => c.id);
   return rngShuffle(rng, pool).slice(0, 3) as EventCardId[];
 }
 
+// A picked card lasts this cycle. Picking a card for the SECOND time in a run
+// promotes it to a permanent trait (up to MAX_TRAITS). active_events is always
+// the union of traits + this cycle's pick — every gameplay check reads that.
+export function selectEventCard(state: GameState, id: EventCardId): GameState {
+  const pickedBefore = state.event_history.includes(id);
+  let traits = state.traits;
+  let history = state.event_history;
+  if (pickedBefore && !traits.includes(id) && traits.length < MAX_TRAITS) {
+    traits = [...traits, id];
+    history = history.filter(h => h !== id);
+  } else if (!pickedBefore && !traits.includes(id)) {
+    history = [...history, id];
+  }
+  const cycle_events = traits.includes(id) ? [] : [id];
+  const active_events = Array.from(new Set([...traits, ...cycle_events]));
+  return toBetPhase({ ...state, traits, event_history: history, cycle_events, active_events, event_card_options: [] });
+}
+
 // ─── Initial state ────────────────────────────────────────────────────────────
 
-export function createInitialState(): GameState {
+export function createInitialState(opts: { daily?: boolean; seed?: number } = {}): GameState {
+  const meta = loadMeta();
   return {
     phase: 'START',
     wallet: STARTING_WALLET,
@@ -1375,6 +1441,7 @@ export function createInitialState(): GameState {
     tiles_cleared: 0,
     magnet_clears: 0,
     board: [],
+    board_cols: calcBoardCols(1),
     bombs_this_attempt: 0,
     lucky_board_used: false,
     combos_triggered: [],
@@ -1389,6 +1456,9 @@ export function createInitialState(): GameState {
     pending_probe: false,
     combo_id_counter: 1,
     active_events: [],
+    traits: [],
+    cycle_events: [],
+    event_history: [],
     active_boss: null,
     event_card_options: [],
     relics: [],
@@ -1399,7 +1469,10 @@ export function createInitialState(): GameState {
     pending_scanner_axis: null,
     boosts: [],
     max_relic_slots: MAX_ACTIVE_RELICS,
-    skills: loadMeta().skills,
+    skills: meta.skills,
+    unlocked_relics: [...meta.unlocks],
+    is_daily: !!opts.daily,
+    run_stats: { perfect_clear_best_cycle: 0, best_flawless_proven: 0, bosses_beaten: 0 },
     interest_earned_this_cycle: 0,
     packs_opened: 0,
     relic_cases_bought: 0,
@@ -1419,7 +1492,7 @@ export function createInitialState(): GameState {
     total_earned: 0,
     highest_multiplier: 1.0,
     best_streak: 0,
-    seed: newSeed(),
+    seed: opts.seed ?? (opts.daily ? dailySeed() : newSeed()),
   };
 }
 

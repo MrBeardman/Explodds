@@ -1,4 +1,4 @@
-import type { SkillId } from './types';
+import type { RelicId, RunStats, SkillId } from './types';
 
 // ─── Meta-progression: skill tree ──────────────────────────────────────────────
 //
@@ -61,15 +61,65 @@ export function maxSkillLevel(id: SkillId): number {
 
 // ─── Persistence ────────────────────────────────────────────────────────────────
 
+export interface DailyRecord {
+  date: string;        // UTC yyyy-mm-dd
+  best_cycles: number;
+  runs: number;
+}
+
 export interface MetaProgress {
   prestige_points: number;
   skills: Record<SkillId, number>;
+  unlocks: RelicId[];          // cross-run relic unlocks (see UNLOCKABLES)
+  daily: DailyRecord | null;   // today's daily-run record
 }
 
 const STORAGE_KEY = 'explodds_meta';
 
 function defaultMeta(): MetaProgress {
-  return { prestige_points: 0, skills: { cascade: 0, bomb_flag: 0 } };
+  return { prestige_points: 0, skills: { cascade: 0, bomb_flag: 0 }, unlocks: [], daily: null };
+}
+
+// ─── Unlocks ───────────────────────────────────────────────────────────────────
+//
+// Feats achieved in any run permanently add a relic to the shop pool. Checked
+// once per run end (recordRunEnd) against GameState.run_stats.
+
+export interface UnlockDef {
+  id: RelicId;
+  name: string;
+  emoji: string;
+  requirement: string;
+  check: (stats: RunStats & { cycles_survived: number }) => boolean;
+}
+
+export const UNLOCKABLES: UnlockDef[] = [
+  { id: 'double_down',  name: 'Double Down',  emoji: '🎲', requirement: 'Survive 5 cycles in one run',                   check: s => s.cycles_survived >= 5 },
+  { id: 'second_sight', name: 'Second Sight', emoji: '👁', requirement: 'Beat 2 bosses in one run',                      check: s => s.bosses_beaten >= 2 },
+  { id: 'vault',        name: 'Vault',        emoji: '🏦', requirement: 'Finish an attempt Flawless with 8+ proven clicks', check: s => s.best_flawless_proven >= 8 },
+  { id: 'cartographer', name: 'Cartographer', emoji: '🗺', requirement: 'Score a Perfect Clear on cycle 3 or later',     check: s => s.perfect_clear_best_cycle >= 3 },
+];
+
+export function evaluateUnlocks(stats: RunStats & { cycles_survived: number }, owned: RelicId[]): RelicId[] {
+  return UNLOCKABLES.filter(u => !owned.includes(u.id) && u.check(stats)).map(u => u.id);
+}
+
+// ─── Daily run ─────────────────────────────────────────────────────────────────
+
+export function todayKey(date: Date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+// Same seed for everyone on the same UTC day — a small FNV-style hash of the date
+export function dailySeed(date: Date = new Date()): number {
+  const key = todayKey(date);
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) % 2147483647 || 1;
+}
+
+export function dailyRecord(meta: MetaProgress = loadMeta()): DailyRecord | null {
+  return meta.daily && meta.daily.date === todayKey() ? meta.daily : null;
 }
 
 export function loadMeta(): MetaProgress {
@@ -81,6 +131,8 @@ export function loadMeta(): MetaProgress {
     return {
       prestige_points: typeof parsed.prestige_points === 'number' ? parsed.prestige_points : 0,
       skills: { ...defaultMeta().skills, ...parsed.skills },
+      unlocks: Array.isArray(parsed.unlocks) ? parsed.unlocks : [],
+      daily: parsed.daily && typeof parsed.daily.date === 'string' ? parsed.daily : null,
     };
   } catch {
     return defaultMeta();
@@ -97,15 +149,25 @@ export function calcPrestigeEarned(cyclesSurvived: number): number {
   return Math.ceil(cyclesSurvived / 2);
 }
 
-// Called once per run, when it ends (Game Over) — persists the award.
-export function awardPrestige(cyclesSurvived: number): MetaProgress {
+// Called once per run, when it ends (Game Over) — persists prestige, any relic
+// unlocks the run's feats earned, and the daily record. Returns what was new.
+export function recordRunEnd(run: { cycles_survived: number; run_stats: RunStats; is_daily: boolean }): { newUnlocks: RelicId[]; daily: DailyRecord | null } {
   const meta = loadMeta();
+  const newUnlocks = evaluateUnlocks({ ...run.run_stats, cycles_survived: run.cycles_survived }, meta.unlocks);
+  let daily = meta.daily;
+  if (run.is_daily) {
+    const today = todayKey();
+    const prev = meta.daily && meta.daily.date === today ? meta.daily : { date: today, best_cycles: 0, runs: 0 };
+    daily = { date: today, best_cycles: Math.max(prev.best_cycles, run.cycles_survived), runs: prev.runs + 1 };
+  }
   const next: MetaProgress = {
     ...meta,
-    prestige_points: meta.prestige_points + calcPrestigeEarned(cyclesSurvived),
+    prestige_points: meta.prestige_points + calcPrestigeEarned(run.cycles_survived),
+    unlocks: [...meta.unlocks, ...newUnlocks],
+    daily,
   };
   saveMeta(next);
-  return next;
+  return { newUnlocks, daily: run.is_daily ? daily : null };
 }
 
 export function upgradeSkill(id: SkillId): MetaProgress {
@@ -119,6 +181,7 @@ export function upgradeSkill(id: SkillId): MetaProgress {
   if (meta.prestige_points < cost) return meta;
 
   const next: MetaProgress = {
+    ...meta,
     prestige_points: meta.prestige_points - cost,
     skills: { ...meta.skills, [id]: nextLevel },
   };

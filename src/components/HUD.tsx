@@ -79,25 +79,45 @@ export function HUD({ state }: Props) {
         </div>
       </div>
 
-      {/* Active modifiers — a stacking list, one chip each */}
+      {/* Modifiers — permanent traits (picked twice) and this cycle's pick */}
       {state.active_events.length > 0 && (
         <div className="stat-card">
-          <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
-            MODIFIERS {state.active_events.length}
-          </div>
-          <div className="flex flex-col gap-1">
-            {state.active_events.map(id => {
-              const def = EVENT_CARD_MAP[id];
-              return (
-                <div key={id} className="flex items-center gap-1.5" title={def.description}>
-                  <span className="text-sm leading-none">{def.emoji}</span>
-                  <span className="font-mono text-xs truncate" style={{ color: 'var(--gold)' }}>
-                    {def.name.toUpperCase()}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          {state.traits.length > 0 && (
+            <>
+              <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+                TRAITS {state.traits.length}
+              </div>
+              <div className="flex flex-col gap-1 mb-2">
+                {state.traits.map(id => {
+                  const def = EVENT_CARD_MAP[id];
+                  return (
+                    <div key={id} className="flex items-center gap-1.5" title={`${def.description} — permanent this run`}>
+                      <span className="text-sm leading-none">{def.emoji}</span>
+                      <span className="font-mono text-xs truncate" style={{ color: 'var(--gold)' }}>{def.name.toUpperCase()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {state.cycle_events.length > 0 && (
+            <>
+              <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+                THIS CYCLE
+              </div>
+              <div className="flex flex-col gap-1">
+                {state.cycle_events.map(id => {
+                  const def = EVENT_CARD_MAP[id];
+                  return (
+                    <div key={id} className="flex items-center gap-1.5" title={`${def.description} — this cycle only`}>
+                      <span className="text-sm leading-none">{def.emoji}</span>
+                      <span className="font-mono text-xs truncate" style={{ color: 'var(--text-primary)' }}>{def.name.toUpperCase()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       )}
 

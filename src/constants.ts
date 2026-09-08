@@ -3,12 +3,17 @@ import type {
   ShopConsumableItem, ShopRelicItem, SymbolId,
 } from './types';
 
+// ─── Grid constants ───────────────────────────────────────────────────────────
+
+export const GRID_COLS = 5;                 // the starting board; see BOARD_GROWTH
+export const GRID_SIZE = GRID_COLS * GRID_COLS;
+
 // ─── Cycle deadlines ──────────────────────────────────────────────────────────
 
 // Tuned with `npm run bots` (scripts/playtest-bots.mjs) against the stake-back,
 // sub-linear economy below — see docs/plans/standard-loop-review.md.
 const FIXED_DEADLINES = [60, 90, 120, 160, 200];
-const DEADLINE_GROWTH = 1.22;
+export const DEADLINE_GROWTH = 1.25;
 
 // The house notices: next cycle's deadline is never below this fraction of the
 // wallet you walk out of the shop with. Backstop against runaway compounding —
@@ -30,11 +35,34 @@ export function calcDeadline(cycle: number): number {
 // is the range where deduction still decides most clicks. Past ~8 the board is
 // a lottery regardless of skill (bot playtest, docs/plans/standard-loop-review.md),
 // so bombs cap at 8 and late-game pressure comes from the economy instead.
-export const MAX_BASE_BOMBS = 8;
-const EARLY_BOMBS = [3, 3, 4, 5, 6];
+// ─── Board growth ─────────────────────────────────────────────────────────────
+//
+// The second difficulty axis. Instead of piling bombs onto a 5×5 (which turns
+// into a lottery past ~8), the board itself grows: 5×5 for cycles 1–5, 6×6 for
+// 6–9, 7×7 from cycle 10. Bigger boards have more interior, so the same bomb
+// DENSITY is more deducible — the density curve below can therefore keep
+// climbing gently instead of capping.
+export const BOARD_GROWTH: Array<{ fromCycle: number; cols: number }> = [
+  { fromCycle: 1, cols: 5 },
+  { fromCycle: 6, cols: 6 },
+  { fromCycle: 10, cols: 7 },
+];
+export function calcBoardCols(cycle: number): number {
+  let cols = GRID_COLS;
+  for (const step of BOARD_GROWTH) if (cycle >= step.fromCycle) cols = step.cols;
+  return cols;
+}
+
+const EARLY_BOMBS = [3, 3, 4, 5, 6];              // exact counts on the 5×5 opening cycles
+export const BOMB_DENSITY_BASE = 0.22;            // cycle 6 density (≈ 6/25 at the end of the 5×5 era)
+export const BOMB_DENSITY_PER_CYCLE = 0.02;
+export const BOMB_DENSITY_MAX = 0.34;
+export const MAX_BOMB_SHARE = 0.45;               // hard cap on bombs / tiles for any board
 export function getBaseBombs(cycle: number): number {
   if (cycle <= EARLY_BOMBS.length) return EARLY_BOMBS[cycle - 1];
-  return Math.min(6 + Math.floor((cycle - 5) / 2), MAX_BASE_BOMBS); // c6: 6, c7-8: 7, c9+: 8
+  const tiles = calcBoardCols(cycle) ** 2;
+  const density = Math.min(BOMB_DENSITY_BASE + (cycle - 6) * BOMB_DENSITY_PER_CYCLE, BOMB_DENSITY_MAX);
+  return Math.round(tiles * density);
 }
 
 // ─── Dynamic bomb count ───────────────────────────────────────────────────────
@@ -45,12 +73,12 @@ export function getBaseBombs(cycle: number): number {
 // compounding lever.
 export const BOMB_RATIO_SLOPE = 6;
 export const BOMB_RATIO_CAP = 5;
-export const MAX_BOMBS = 18;
 export function calcBombs(bet: number, wallet: number, cycle: number): number {
   const base = getBaseBombs(cycle);
   const ratio = bet / Math.max(wallet, 1);
   const bonus = Math.floor(ratio * BOMB_RATIO_SLOPE);
-  return Math.min(base + bonus, base + BOMB_RATIO_CAP, MAX_BOMBS);
+  const hardCap = Math.floor(calcBoardCols(cycle) ** 2 * MAX_BOMB_SHARE);
+  return Math.min(base + bonus, base + BOMB_RATIO_CAP, hardCap);
 }
 
 // ─── Tile cash calculation ────────────────────────────────────────────────────
@@ -78,6 +106,13 @@ export const INFLATOR_INTEREST_MULT = 2;      // Inflator boss doubles the rate
 // early something betting can't buy (interest alone never beat positive-EV play).
 export const COLLATERAL_DEPOSIT_FRAC = 0.5;
 export const COLLATERAL_BOMB_RELIEF = 1;
+
+// ─── Event cards: cycle-scoped picks + a few permanent traits ─────────────────
+//
+// A picked card lasts THIS cycle. Picking the same card a second time in a run
+// keeps it for the rest of the run as a trait (up to MAX_TRAITS) — so the pick
+// screen stays a live decision instead of converging on "everything" by cycle 10.
+export const MAX_TRAITS = 3;
 
 export const MIN_BET_BASE = 10;
 export const MIN_BET_PER_CYCLE = 2;           // gentler than the spec's +$5 — tuned via sim
@@ -231,6 +266,7 @@ export const BOSSES: BossDef[] = [
   { id: 'liar',          name: 'The Liar',          emoji: '🤥', description: 'One number on every board is off by one' },
   { id: 'mirror',        name: 'The Mirror',        emoji: '🪞', description: 'Numbers count diagonal neighbours only' },
   { id: 'curfew',        name: 'The Curfew',        emoji: '⏰', description: `Attempts end on their own after ${CURFEW_CLICKS} reveals` },
+  { id: 'mason',         name: 'The Mason',         emoji: '🧱', description: 'Bombs are laid in touching pairs' },
 ];
 
 export const BOSS_MAP = Object.fromEntries(
@@ -289,11 +325,22 @@ export const ALL_RELICS: ShopRelicItem[] = [
   // Deduction expansion — information relics change the SHAPE of what you can prove
   { id: 'ledger',          name: 'Ledger',           cost: 14, emoji: '📒', rarity: 'rare',      description: 'The bomb total of every row is shown along the board edge', sold: false, owned: false },
   { id: 'logician',        name: 'Logician',         cost: 12, emoji: '🧠', rarity: 'rare',      description: `Proven-safe clicks give +${LOGICIAN_MULT_GAIN.toFixed(2)} mult instead of +${DEDUCTION_MULT_GAIN.toFixed(2)}`, sold: false, owned: false },
-  { id: 'gut_feeling',     name: 'Gut Feeling',      cost: 12, emoji: '🫀', rarity: 'rare',      description: 'Once per cycle, a guess that would have hit a bomb is spared', sold: false, owned: false },
+  { id: 'gut_feeling',     name: 'Gut Feeling',      cost: 16, emoji: '🫀', rarity: 'legendary', description: 'Once per cycle, a guess that would hit a bomb cashes you out instead — for half the winnings', sold: false, owned: false },
   { id: 'echo',            name: 'Echo',             cost: 10, emoji: '📣', rarity: 'common',    description: `After a bust, the next board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
+  { id: 'second_sight',    name: 'Second Sight',     cost: 12, emoji: '👁', rarity: 'rare',      description: 'Hinted (known-safe) tiles show their bomb count before you reveal them', sold: false, owned: false },
+  { id: 'cartographer',    name: 'Cartographer',     cost: 18, emoji: '🗺', rarity: 'legendary', description: `Every board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
+  // Gambler archetype
+  { id: 'double_down',     name: 'Double Down',      cost: 12, emoji: '🎲', rarity: 'rare',      description: 'Bets of at least half your wallet pay ×1.3 winnings', sold: false, owned: false },
+  { id: 'loaded_dice',     name: 'Loaded Dice',      cost: 8,  emoji: '🎯', rarity: 'common',    description: '+1 bomb on every board, every tile pays ×1.25', sold: false, owned: false },
+  // Banker archetype
+  { id: 'vault',           name: 'Vault',            cost: 12, emoji: '🏦', rarity: 'rare',      description: 'Deposited cash earns half its interest even when you bust', sold: false, owned: false },
   { id: 'chain_reaction',  name: 'Chain Reaction',   cost: 14, emoji: '💥', rarity: 'rare',      description: '2+ combos in one attempt: cashout earns ×1.5', sold: false, owned: false },
   { id: 'specialist',      name: 'Specialist',       cost: 12, emoji: '🎯', rarity: 'rare',      description: 'Packs favor your most-boosted symbol instead of avoiding it', sold: false, owned: false },
 ];
+
+// Relics that start LOCKED and enter the shop pool only once unlocked across
+// runs (see UNLOCKABLES in meta.ts). Kept here so shop generation can filter.
+export const LOCKED_RELIC_IDS: RelicId[] = ['cartographer', 'double_down', 'vault', 'second_sight'];
 
 export const RELIC_MAP = Object.fromEntries(
   ALL_RELICS.map(r => [r.id, r])
@@ -301,8 +348,6 @@ export const RELIC_MAP = Object.fromEntries(
 
 // ─── Grid constants ───────────────────────────────────────────────────────────
 
-export const GRID_SIZE = 25;
-export const GRID_COLS = 5;
 export const STARTING_WALLET = 150;
 export const BET_STEP = 5;
 export const MAX_ACTIVE_RELICS = 6;

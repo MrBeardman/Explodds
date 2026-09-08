@@ -16,6 +16,9 @@ export function CycleHeader({ state }: Props) {
         <span className="font-display text-2xl leading-none" style={{ color: 'var(--text-primary)' }}>
           {state.cycle_number}
         </span>
+        <span className="font-mono text-xs ml-2 px-1.5 py-0.5 rounded" style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }} title="board size this cycle">
+          {state.board_cols}×{state.board_cols}
+        </span>
       </div>
       {boss ? (
         <div className="font-mono text-xs px-2 py-1 rounded" style={{ color: '#fff', background: 'rgba(220,38,38,0.35)', border: '1px solid var(--red)' }}>

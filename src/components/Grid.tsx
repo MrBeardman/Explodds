@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { SYMBOL_MAP, ALL_CONSUMABLES } from '../constants';
 import { adjacentBombCount } from '../gameLogic';
-import { displayedNumber, rowColTotals } from '../deduction';
+import { displayedNumber, rowColTotals, boardCols } from '../deduction';
 import type { GameState, Tile } from '../types';
 import bombSrc from '../assets/bomb.png';
 
@@ -33,6 +33,7 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
   const flagModeActive = state.flag_mode;
   const playerFlags = state.player_flags;
   const isBustFlash = phase === 'BUST_FLASH';
+  const cols = boardCols(board);
   // Ledger relic: bomb totals per row along the board's right edge
   const ledger = state.relics.includes('ledger') && board.length > 0 ? rowColTotals(board) : null;
   const bombsHidden = board.filter(t => t.type === 'bomb' && (t.state === 'hidden' || t.state === 'flagged')).length;
@@ -60,7 +61,7 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
       <div className="relative">
         <div
           className="grid gap-1.5"
-          style={{ gridTemplateColumns: ledger ? 'repeat(5, minmax(0, 1fr)) 1.25rem' : 'repeat(5, minmax(0, 1fr))' }}
+          style={{ gridTemplateColumns: ledger ? `repeat(${cols}, minmax(0, 1fr)) 1.25rem` : `repeat(${cols}, minmax(0, 1fr))` }}
         >
           {board.map((tile) => {
             const cell = (
@@ -68,6 +69,7 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
                 key={tile.index}
                 tile={tile}
                 adjacentBombs={displayedNumber(state, board, tile.index) ?? 0}
+                shownNumber={displayedNumber(state, board, tile.index)}
                 ghostAdjacentBombs={debugReveal ? adjacentBombCount(board, tile.index) : 0}
                 isAnimating={animating.has(tile.index)}
                 scannerActive={scannerActive}
@@ -75,14 +77,15 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
                 flagModeActive={flagModeActive}
                 playerFlagged={playerFlags.includes(tile.index)}
                 clearing={phase === 'CLEARING'}
+                cols={cols}
                 onClick={handleClick}
                 debugReveal={debugReveal}
                 revealAll={revealAll}
               />
             );
             // Ledger: a row total after every 5th tile
-            if (ledger && tile.index % 5 === 4) {
-              return [cell, <LedgerCell key={`row-${tile.index}`} value={ledger.rows[Math.floor(tile.index / 5)]} title="bombs in this row" />];
+            if (ledger && tile.index % cols === cols - 1) {
+              return [cell, <LedgerCell key={`row-${tile.index}`} value={ledger.rows[Math.floor(tile.index / cols)]} title="bombs in this row" />];
             }
             return cell;
           })}
@@ -143,6 +146,7 @@ function LedgerCell({ value, title }: { value: number; title: string }) {
 interface TileProps {
   tile: Tile;
   adjacentBombs: number;
+  shownNumber: number | null;
   ghostAdjacentBombs: number;
   isAnimating: boolean;
   scannerActive: boolean;
@@ -150,12 +154,13 @@ interface TileProps {
   flagModeActive: boolean;
   playerFlagged: boolean;
   clearing: boolean;
+  cols: number;
   onClick: (i: number) => void;
   debugReveal: boolean;
   revealAll?: boolean;
 }
 
-function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, probeActive, flagModeActive, playerFlagged, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
+function GridTile({ tile, adjacentBombs, shownNumber, ghostAdjacentBombs, isAnimating, scannerActive, probeActive, flagModeActive, playerFlagged, clearing, cols, onClick, debugReveal, revealAll = false }: TileProps) {
   const isHidden    = tile.state === 'hidden';
   const isHinted    = tile.state === 'hinted';
   const isFlagged   = tile.state === 'flagged';
@@ -167,7 +172,9 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
   // visual treatment as GameOver's FinalBoard reveal (dimmed, non-interactive).
   const isGhostReveal = revealAll && (isHidden || isHinted || isFlagged);
 
-  const entranceDelay = `${(tile.index % 5) * 20 + Math.floor(tile.index / 5) * 30}ms`;
+  const entranceDelay = `${(tile.index % cols) * 20 + Math.floor(tile.index / cols) * 30}ms`;
+  // Bigger boards get smaller glyphs so 7×7 still fits the same panel width
+  const glyph = cols >= 7 ? 'text-lg sm:text-xl' : cols >= 6 ? 'text-xl sm:text-2xl' : 'text-2xl sm:text-3xl';
 
   let bg = 'var(--bg-card)';
   let borderColor = 'var(--border)';
@@ -232,7 +239,7 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
         isAnimating ? 'tile-reveal' : '',
       ].filter(Boolean).join(' ')}
     >
-      <TileContent tile={tile} adjacentBombs={adjacentBombs} isAnimating={isAnimating} consumableDef={consumableDef ?? null} isGhostReveal={isGhostReveal} />
+      <TileContent tile={tile} adjacentBombs={adjacentBombs} shownNumber={shownNumber} isAnimating={isAnimating} consumableDef={consumableDef ?? null} isGhostReveal={isGhostReveal} glyph={glyph} />
       {playerFlagged && (isHidden || isHinted || isFlagged) && (
         <span
           className="absolute top-0.5 left-1 text-xs leading-none"
@@ -284,12 +291,16 @@ function TileContent({
   isAnimating,
   consumableDef,
   isGhostReveal = false,
+  glyph = 'text-2xl sm:text-3xl',
+  shownNumber = null,
 }: {
   tile: Tile;
   adjacentBombs: number;
+  shownNumber?: number | null;
   isAnimating: boolean;
   consumableDef: typeof ALL_CONSUMABLES[0] | null;
   isGhostReveal?: boolean;
+  glyph?: string;
 }) {
   if (tile.state === 'bomb_hit') {
     return <img src={bombSrc} alt="bomb" className={`w-3/4 h-3/4 object-contain ${isAnimating ? 'icon-pop' : ''}`} />;
@@ -305,7 +316,7 @@ function TileContent({
       return <img src={bombSrc} alt="bomb" className="w-3/4 h-3/4 object-contain opacity-55" />;
     }
     if (tile.type === 'symbol' && tile.symbol) {
-      return <span className="text-2xl sm:text-3xl leading-none opacity-45">{SYMBOL_MAP[tile.symbol].emoji}</span>;
+      return <span className={`${glyph} leading-none opacity-45`}>{SYMBOL_MAP[tile.symbol].emoji}</span>;
     }
     return null;
   }
@@ -314,7 +325,7 @@ function TileContent({
     const def = SYMBOL_MAP[tile.symbol];
     return (
       <>
-        <span className={`text-2xl sm:text-3xl leading-none ${isAnimating ? 'icon-pop' : ''}`}>
+        <span className={`${glyph} leading-none ${isAnimating ? 'icon-pop' : ''}`}>
           {def.emoji}
         </span>
         {/* Adjacent bomb count — every revealed safe tile shows one (Blackout hides these) */}
@@ -347,6 +358,14 @@ function TileContent({
   }
 
   if (tile.state === 'hinted') {
+    // Second Sight relic: the hinted tile's number is known before it's revealed
+    if (shownNumber !== null) {
+      return (
+        <span className="font-mono font-bold text-lg leading-none opacity-80" style={{ color: shownNumber > 0 ? ADJ_COLORS[shownNumber] : 'var(--text-muted)' }}>
+          {shownNumber}
+        </span>
+      );
+    }
     return <span className="text-xl opacity-40">💎</span>;
   }
 

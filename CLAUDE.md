@@ -60,9 +60,12 @@ pools — their `RelicId`/`ConsumableId` union entries and gameLogic formulas st
 (harmless no-ops since they can never be owned), so re-enabling later is just adding
 them back to `ALL_RELICS`/`ALL_CONSUMABLES` in constants.ts.
 
-**Modifiers stack permanently.** Event-card picks (`active_events: EventCardId[]`) are
-never replaced or reset — every pick from every cycle for the whole run stays active.
-This is a second permanent build axis alongside relics and packs.
+**Modifiers: cycle-scoped picks + a few permanent traits.** An event-card pick lasts
+THIS cycle (`cycle_events`). Picking the same card a second time in a run promotes it
+to a permanent **trait** (`traits`, max `MAX_TRAITS` = 3); `event_history` remembers
+single picks. `active_events` is always the derived union (traits + cycle_events) and
+is the only thing gameplay checks read — `selectEventCard`/`startNextCycle` are the
+only writers. `drawEventCards` excludes traits from the draw.
 
 **Packs & boosts:** the shop sells cash-funded packs (`📦`) that reveal 3 candidate
 permanent symbol boosts (frequency or payout, on a specific symbol) — pick 1, keep it
@@ -363,6 +366,19 @@ flag suspected bomb tiles during CLEARING for a bonus when the attempt ends:
   have no penalty. `player_flags`/`flag_mode` reset to `[]`/`false` everywhere an
   attempt ends (handleCashout, the bust branch, handlePlaceBet, startNextCycle).
 
+**Unlocks & daily run (meta.ts too).** `MetaProgress` also holds `unlocks: RelicId[]`
+and `daily: DailyRecord | null`. `UNLOCKABLES` lists feats (`check(run_stats +
+cycles_survived)`) that permanently add a relic to the shop pool; `GameState.run_stats`
+tracks the feats during a run (`perfect_clear_best_cycle` in resolveCombosAndFinalize,
+`best_flawless_proven` in handleCashout, `bosses_beaten` in resolveCycleSuccess).
+`recordRunEnd(run)` (replaces the old `awardPrestige`) is the single Game-Over writer:
+prestige + new unlocks + daily record, called once from StandardGame's GAME_OVER effect,
+which keeps the returned `newUnlocks`/`daily` in local state for `GameOver` to announce.
+**Daily run**: `createInitialState({ daily: true })` seeds the run with `dailySeed()`
+(hash of the UTC date) and sets `is_daily`; the Start Screen's 📅 DAILY RUN button shows
+today's best from `dailyRecord()`. The Start Screen also lists every unlockable with its
+requirement.
+
 **Adding skill #3+**: append to `SKILLS` in meta.ts (id, name, emoji, per-level
 name/description/cost), add the id to the `SkillId` union in types.ts, add it to
 `defaultMeta().skills` in meta.ts, then hook `state.skills[id]` into whichever
@@ -379,7 +395,7 @@ progression only ever happens via the Start Screen's SkillTree.
 ```typescript
 // Deadlines
 cycle 1–5: [60, 90, 120, 160, 200]
-cycle 6+:  Math.round(prev * 1.22 / 10) * 10
+cycle 6+:  Math.round(prev * 1.25 / 10) * 10
 "The house notices": next deadline = max(curve, round(wallet × DEADLINE_WALLET_CHASE(0.55)))
   — the backstop against runaway compounding; irrelevant for normal bankrolls
 Inflator boss: deadline × 1.25 (applied in startNextCycle, after the chase)
@@ -388,13 +404,20 @@ Inflator boss: deadline × 1.25 (applied in startNextCycle, after the chase)
 minBet = MIN_BET_BASE(10) + cycle_number × MIN_BET_PER_CYCLE(2)
 Greed Mode event: max(minBet, GREED_MODE_MIN_BET=25)
 
-// Base bombs per cycle — capped at MAX_BASE_BOMBS (8): on a 5×5 with numbers on
-// every tile, past ~8 bombs the board is a lottery regardless of skill
-cycle 1-5: [3, 3, 4, 5, 6] | 6+: min(6 + floor((cycle-5)/2), 8)
+// Board growth (BOARD_GROWTH / calcBoardCols) — the second difficulty axis
+cycles 1-5: 5×5 | 6-9: 6×6 | 10+: 7×7      (state.board_cols; board.length === cols²)
+
+// Base bombs per cycle: exact counts on the 5×5 opening cycles, then a DENSITY
+// curve on the growing board (bigger boards have more interior, so the same
+// density is more deducible — the curve can keep climbing gently)
+cycle 1-5: [3, 3, 4, 5, 6]
+cycle 6+:  round(tiles × min(BOMB_DENSITY_BASE(0.22) + (cycle−6) × 0.02, BOMB_DENSITY_MAX(0.34)))
 
 // Dynamic bomb count (from bet) — the bet is a RISK dial, see effectiveBombs()
-bombs = base + floor((bet / wallet) × BOMB_RATIO_SLOPE(6)), capped at base + 5, max 18
+bombs = base + floor((bet / wallet) × BOMB_RATIO_SLOPE(6)), capped at base + 5,
+        hard cap floor(tiles × MAX_BOMB_SHARE(0.45))
 +3 extra if Danger Pay event active
++1 if Loaded Dice relic
 −2 if High Roller relic and bet ≥ 50% of wallet
 −1 Collateral: if deposited ≥ 50% of the deadline (COLLATERAL_DEPOSIT_FRAC)
 
@@ -589,10 +612,27 @@ bonus disabled for playtesting) — listed below for reference but not in the sh
 | logician | Proven clicks give +0.10 mult instead of +0.05 | 12🎫 | rare |
 | gut_feeling | Once per cycle, a guess that would bust is spared (bomb relocated) | 12🎫 | rare |
 | echo | After a bust, the next board starts with 2 empties already revealed | 10🎫 | common |
+| second_sight *(unlock)* | Hinted (known-safe) tiles show their number before being revealed (`displayedNumber`) | 12🎫 | rare |
+| cartographer *(unlock)* | First click opens a full bomb-free 3×3 (`openingTiles(..., full=true)`) | 18🎫 | legendary |
+| double_down *(unlock)* | Bets ≥ half the pre-bet wallet pay ×1.3 winnings (handleCashout) | 12🎫 | rare |
+| loaded_dice | +1 bomb every board, every tile pays ×1.25 | 8🎫 | common |
+| vault *(unlock)* | Deposited cash earns half its interest even on a bust | 12🎫 | rare |
+
+**Archetype spines** (each has 4+ relics, so a run can lean into one): *Deduction* —
+ledger, logician, echo, second_sight, cartographer, surveyor, bombproof_boots;
+*Gambler* — high_roller, double_down, loaded_dice, bomb_suit, insurance_policy,
+adrenaline_core; *Combo* — cherry_picker … diamond_dealer, synergist, chain_reaction,
+lucky_charm; *Banker* — compound_chip, vault, greed_chip, ticket_printer, haggler.
+
+**Locked relics** (`LOCKED_RELIC_IDS` in constants.ts) only enter the shop pool once
+unlocked across runs — `relicPool(state)` filters by `state.unlocked_relics`, a snapshot
+of `meta.unlocks` taken at `createInitialState()`. See "Unlocks & daily run" below.
 
 `sixth_sense` was retired — numbers on every revealed tile is now the baseline rule
 (it was a 6× run-length multiplier as a single relic). Ledger is deliberately
-rows-only: rows+columns made most boards fully determined in the bot test.
+rows-only: rows+columns made most boards fully determined in the bot test. Gut Feeling
+ends the attempt as a forced cashout rather than relocating the bomb — a free
+relocation once per cycle let the perfect-deducer bot run 25+ cycles on that relic alone.
 
 Max 6 relics active by default (`state.max_relic_slots`, starts at `MAX_ACTIVE_RELICS`)
 — buyable up the Relic Case shop item, see below. Relic reroll costs 2🎫.
@@ -630,6 +670,7 @@ Boss cycles have NO event card. Beating one: +8🎫 (BOSS_REWARD_TICKETS).
 | liar | One tile per attempt (seeded) shows its count ±1 — a "proven" click that trusts it can bust | deduction.ts `liarTile`/`displayedNumber` |
 | mirror | Numbers count diagonal neighbours only | deduction.ts `numberNeighbors` |
 | curfew | Attempt auto-cashes out after `CURFEW_CLICKS` (10) reveals | handleTileClick |
+| mason | Bombs are laid in touching (orthogonal) pairs — re-placed after the shuffle, same count | generateBoard |
 
 Blackout now hides numbers on SYMBOL tiles only (empties keep theirs) — i.e. it puts the
 player back at the pre-rework information level instead of deleting the skill layer.
@@ -842,8 +883,8 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 
 | Action | When | Effect |
 |--------|------|--------|
-| START_GAME | Start screen click | createInitialState + draw event cards → EVENT_CARD |
-| SELECT_EVENT_CARD | EventChoice card click | **appends** to active_events → toBetPhase (untimed — no auto-select) |
+| START_GAME | Start screen click (`daily?: boolean`) | createInitialState({ daily }) + draw event cards → EVENT_CARD |
+| SELECT_EVENT_CARD | EventChoice card click | `selectEventCard` — this cycle's pick; a second pick of the same card becomes a permanent trait → toBetPhase |
 | CONFIRM_BOSS | BossIntro button | BOSS_INTRO → toBetPhase |
 | SET_BET | Slider move | clamp to [minBet, wallet], snap to $5; ignored under Warden |
 | PLACE_BET | Button click | wallet -= bet, generate board → PLACEMENT or CLEARING |
@@ -890,6 +931,13 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 - **Cascade Sense level 1 vs 2 differ only in the empty-cascade cap** — the opening
   (plus shape) is identical. Level 0 = single-tile opening, no cascade.
 - **A guess resets the symbol streak; an empty does not.** Milestone flags reset with it.
+- **Never hardcode 5 for the grid.** Board size is `state.board_cols` (5/6/7) and every
+  index↔row/col conversion goes through `boardCols(board)` (deduction.ts) or the
+  `cols` argument — `GRID_COLS`/`GRID_SIZE` are only the cycle-1 defaults. Grid.tsx,
+  GameOver's FinalBoard and ConsumablePlacement all derive their column count from the
+  board. The DebugPanel's "Cycle #" setter patches `board_cols` alongside `cycle_number`.
+- **`active_events` is derived.** Never push to it directly outside `selectEventCard` /
+  `startNextCycle` (the DebugPanel's MODIFIERS toggles are the one debug-only exception).
 - **Tile cash is sub-linear and the stake comes back.** Anything that reasons about
   "earnings vs bet" (profitable-clear tickets, bot cashout rules, UI copy) must treat the
   bet as returned money, not spent money. `total_earned` counts winnings only.

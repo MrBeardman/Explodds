@@ -58,7 +58,7 @@ function guessRisk(state) {
   for (const t of b) {
     const n = DD.displayedNumber(state, b, t.index);
     if (n === null) continue;
-    const nb = DD.numberNeighbors(state, t.index);
+    const nb = DD.numberNeighbors(state, b, t.index);
     const u = nb.filter(j => unknown.includes(j));
     const known = nb.filter(j => d.bombs.has(j) || b[j].state === 'flagged').length;
     if (!u.length) continue;
@@ -80,9 +80,10 @@ function chooseClick(state, player, rng, { alpha, skill }) {
   if (!hidden.length) return { action: 'cashout' };
   const canCashout = state.clicks_this_attempt >= 2;
 
+  const cols = DD.boardCols(b);
   if (state.clicks_this_attempt === 0) {
-    // opening: any tile — prefer an interior one so the 3×3 opening is largest
-    const interior = hidden.filter(i => i % 5 > 0 && i % 5 < 4 && i > 4 && i < 20);
+    // opening: any tile — prefer an interior one so the plus opening is whole
+    const interior = hidden.filter(i => i % cols > 0 && i % cols < cols - 1 && i >= cols && i < cols * (cols - 1));
     const pool = interior.length ? interior : hidden;
     return { action: 'click', idx: pool[Math.floor(rng() * pool.length)], kind: 'free' };
   }
@@ -95,7 +96,7 @@ function chooseClick(state, player, rng, { alpha, skill }) {
   const safe = [...d.safe].filter(j => hidden.includes(j));
   if (safe.length && rng() < skill) {
     // most informative proven tile: the one touching the most unknowns
-    safe.sort((x, y) => DD.neighbors8(y).filter(j => unknown.includes(j)).length - DD.neighbors8(x).filter(j => unknown.includes(j)).length);
+    safe.sort((x, y) => DD.neighbors8(y, cols).filter(j => unknown.includes(j)).length - DD.neighbors8(x, cols).filter(j => unknown.includes(j)).length);
     return { action: 'click', idx: safe[0], kind: 'proven' };
   }
   let best = null, bestP = 2;
@@ -123,7 +124,7 @@ export function playRun({ player = 'solver', seed = 1, cascade = 1, relics = [],
   while (s.phase !== 'GAME_OVER' && guard++ < 200000 && s.cycle_number <= maxCycles) {
     switch (s.phase) {
       case 'EVENT_CARD':
-        s = GL.toBetPhase({ ...s, active_events: [...s.active_events, s.event_card_options[0]], event_card_options: [] });
+        s = GL.selectEventCard(s, s.event_card_options[0]);
         break;
       case 'BOSS_INTRO': s = GL.toBetPhase(s); break;
       case 'BET': {
@@ -250,4 +251,9 @@ if (mode === 'density') {
     }
     console.log(`${String(bombs).padStart(5)} | ${pct(busts / A).padStart(5)} | ${pct(proven / Math.max(1, proven + guess)).padStart(7)} | ${(clicks / A).toFixed(1).padStart(10)} | ${(revealed / A).toFixed(1).padStart(17)} | ${(earn / A).toFixed(1).padStart(12)} | ${(earn / A / 16).toFixed(2).padStart(12)}`);
   }
+}
+if (mode === 'one') {
+  // ad-hoc profile: node scripts/playtest-bots.mjs one '{"relics":["echo"],"betFrac":0.3}' [runs]
+  const cfg = JSON.parse(process.argv[3] ?? '{}');
+  summarize(JSON.stringify(cfg), { player: 'solver', ...cfg }, Number(process.argv[4] ?? 300));
 }

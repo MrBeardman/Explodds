@@ -1,10 +1,13 @@
 import logoSrc from '../assets/logo.png';
-import { loadMeta } from '../meta';
+import { loadMeta, dailyRecord, todayKey, UNLOCKABLES } from '../meta';
+import { calcDeadline, DEADLINE_GROWTH } from '../constants';
 
-interface Props { onStart: () => void; onOpenSkills: () => void; }
+interface Props { onStart: () => void; onStartDaily: () => void; onOpenSkills: () => void; }
 
-export function StartScreen({ onStart, onOpenSkills }: Props) {
-  const prestige = loadMeta().prestige_points;
+export function StartScreen({ onStart, onStartDaily, onOpenSkills }: Props) {
+  const meta = loadMeta();
+  const prestige = meta.prestige_points;
+  const daily = dailyRecord(meta);
   return (
     <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-6">
       {/* Title — logo art has black padding baked in, crop it with a window */}
@@ -31,11 +34,11 @@ export function StartScreen({ onStart, onOpenSkills }: Props) {
         </div>
         <div className="casino-panel p-4 flex flex-col gap-2.5 rounded-xl">
           {[
-            ['💣', 'Mines field with 5×5 grid'],
-            ['💵', 'Bet before each board — bet lost on bust'],
-            ['🎯', 'Earn cash per tile cleared'],
-            ['🔢', 'Empty tiles show # of adjacent bombs'],
-            ['💳', 'Pay off your cycle DEADLINE to advance'],
+            ['💣', 'Minesweeper board — 5×5, growing to 7×7'],
+            ['💵', 'Stake a bet: cash out to keep it + winnings, bust to lose it'],
+            ['🔢', 'Every revealed tile shows its adjacent bombs'],
+            ['🧠', 'Proven-safe clicks build your multiplier — guesses reset it'],
+            ['💳', 'Deposit toward the cycle DEADLINE to advance'],
             ['3️⃣', '3 attempts per cycle (bust = attempt used)'],
             ['🎫', 'Earn tickets → spend on relics in shop'],
           ].map(([icon, text]) => (
@@ -53,13 +56,7 @@ export function StartScreen({ onStart, onOpenSkills }: Props) {
           CYCLE DEADLINES
         </div>
         <div className="flex justify-center gap-2 font-mono text-xs">
-          {[
-            { cycle: 1, debt: 80 },
-            { cycle: 2, debt: 140 },
-            { cycle: 3, debt: 190 },
-            { cycle: 4, debt: 280 },
-            { cycle: 5, debt: 400 },
-          ].map(({ cycle, debt }) => (
+          {[1, 2, 3, 4, 5].map(cycle => ({ cycle, debt: calcDeadline(cycle) })).map(({ cycle, debt }) => (
             <div
               key={cycle}
               className="flex flex-col items-center p-2 rounded-lg"
@@ -74,7 +71,7 @@ export function StartScreen({ onStart, onOpenSkills }: Props) {
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
           >
             <div style={{ color: 'var(--text-muted)' }}>6+</div>
-            <div style={{ color: 'var(--red)' }}>×1.3</div>
+            <div style={{ color: 'var(--red)' }}>×{DEADLINE_GROWTH}</div>
           </div>
         </div>
       </div>
@@ -96,13 +93,42 @@ export function StartScreen({ onStart, onOpenSkills }: Props) {
         NEW RUN
       </button>
 
-      <button
-        onClick={onOpenSkills}
-        className="chip font-mono text-sm cursor-pointer"
-        style={{ color: '#c084fc' }}
-      >
-        🌳 SKILLS {prestige > 0 ? `(✦ ${prestige})` : ''}
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onStartDaily}
+          className="chip font-mono text-sm cursor-pointer"
+          style={{ color: 'var(--gold)' }}
+          title={`Same seed for everyone today (${todayKey()}) — compare cycles survived`}
+        >
+          📅 DAILY RUN{daily ? ` · best ${daily.best_cycles}` : ''}
+        </button>
+        <button
+          onClick={onOpenSkills}
+          className="chip font-mono text-sm cursor-pointer"
+          style={{ color: '#c084fc' }}
+        >
+          🌳 SKILLS {prestige > 0 ? `(✦ ${prestige})` : ''}
+        </button>
+      </div>
+
+      {/* Cross-run unlocks — feats that add relics to the shop pool */}
+      <div className="w-full max-w-sm">
+        <div className="font-mono text-xs text-center mb-2" style={{ color: 'var(--text-muted)', letterSpacing: '0.2em' }}>
+          UNLOCKS {meta.unlocks.length}/{UNLOCKABLES.length}
+        </div>
+        <div className="casino-panel p-3 rounded-xl flex flex-col gap-1.5">
+          {UNLOCKABLES.map(u => {
+            const done = meta.unlocks.includes(u.id);
+            return (
+              <div key={u.id} className="flex items-center gap-2 font-mono text-xs" style={{ color: done ? 'var(--text-primary)' : 'var(--text-dim)' }}>
+                <span className="w-5 text-base" style={{ filter: done ? 'none' : 'grayscale(1) opacity(0.5)' }}>{u.emoji}</span>
+                <span className="w-24 shrink-0" style={{ color: done ? 'var(--gold)' : 'var(--text-muted)' }}>{u.name}</span>
+                <span className="truncate">{done ? 'unlocked' : u.requirement}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

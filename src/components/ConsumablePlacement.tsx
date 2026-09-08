@@ -41,7 +41,7 @@ export function ConsumablePlacement({ state, onPlace, onSkip }: Props) {
       </div>
 
       {/* Board grid for placement */}
-      <div className="grid grid-cols-5 gap-1.5 w-full">
+      <div className="grid gap-1.5 w-full" style={{ gridTemplateColumns: `repeat(${state.board_cols}, minmax(0, 1fr))` }}>
         {board.map((tile) => {
           const hasConsumable = tile.consumable !== null;
           const def = hasConsumable ? ALL_CONSUMABLES.find(c => c.id === tile.consumable) : null;

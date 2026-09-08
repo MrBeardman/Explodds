@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  ALL_RELICS, ALL_CONSUMABLES, EVENT_CARDS, BOSSES, SYMBOLS,
+  ALL_RELICS, ALL_CONSUMABLES, EVENT_CARDS, BOSSES, SYMBOLS, calcBoardCols,
 } from '../constants';
 import { SKILLS } from '../meta';
 import type { GameState, RelicId, ConsumableId, EventCardId, BossId, SymbolBoost, BoostAxis } from '../types';
@@ -40,7 +40,7 @@ export function DebugPanel({ state, debugReveal, onToggleReveal, onPatch, onClos
         </Section>
 
         <Section title="CYCLE">
-          <NumberRow label="Cycle #" value={state.cycle_number} onSet={v => onPatch({ cycle_number: v })} />
+          <NumberRow label="Cycle #" value={state.cycle_number} onSet={v => onPatch({ cycle_number: v, board_cols: calcBoardCols(v) })} />
           <NumberRow label="Deadline $" value={state.deadline} onSet={v => onPatch({ deadline: v })} />
           <NumberRow label="Deposited $" value={state.deposited} onSet={v => onPatch({ deposited: v })} />
         </Section>

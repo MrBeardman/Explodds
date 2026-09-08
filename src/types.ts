@@ -42,6 +42,11 @@ export type RelicId =
   | 'logician'
   | 'gut_feeling'
   | 'echo'
+  | 'second_sight'
+  | 'cartographer'
+  | 'double_down'
+  | 'loaded_dice'
+  | 'vault'
   | 'chain_reaction'
   | 'specialist';
 
@@ -71,7 +76,8 @@ export type BossId =
   | 'blightbringer'
   | 'liar'
   | 'mirror'
-  | 'curfew';
+  | 'curfew'
+  | 'mason';
 
 export type EventCardId =
   | 'hot_streak'
@@ -110,6 +116,14 @@ export type GamePhase =
   | 'RESULTS'
   | 'SHOP'
   | 'GAME_OVER';
+
+// ─── Run feats (for cross-run unlocks) ────────────────────────────────────────
+
+export interface RunStats {
+  perfect_clear_best_cycle: number; // highest cycle a Perfect Clear happened on (0 = never)
+  best_flawless_proven: number;     // most proven clicks in a zero-guess attempt
+  bosses_beaten: number;
+}
 
 // ─── Cashout results breakdown ────────────────────────────────────────────────
 //
@@ -222,6 +236,7 @@ export interface GameState {
 
   // Board
   board: Tile[];
+  board_cols: number;             // 5 → 6 → 7 as cycles advance (calcBoardCols); board.length === cols²
   bombs_this_attempt: number;
   lucky_board_used: boolean;      // Lucky Board event: first attempt no empties
 
@@ -230,8 +245,12 @@ export interface GameState {
   active_combo_display: ComboDisplay[];
   combo_id_counter: number;
 
-  // Modifiers — active_events stacks permanently across the whole run
+  // Modifiers. active_events is the DERIVED union of traits + cycle_events —
+  // every gameplay check reads it; only selectEventCard/startNextCycle write it.
   active_events: EventCardId[];
+  traits: EventCardId[];          // permanent for the run (a card picked twice), max MAX_TRAITS
+  cycle_events: EventCardId[];    // this cycle's pick(s) only
+  event_history: EventCardId[];   // picked once so far — picking again promotes to a trait
   active_boss: BossId | null;    // set on boss cycles (every 3rd)
   event_card_options: EventCardId[];
   relics: RelicId[];
@@ -243,6 +262,9 @@ export interface GameState {
   boosts: SymbolBoost[];         // permanent symbol boosts from packs
   max_relic_slots: number;       // base MAX_ACTIVE_RELICS + Relic Case purchases
   skills: Record<SkillId, number>; // snapshot of meta-progression skill levels, taken at run start
+  unlocked_relics: RelicId[];      // snapshot of cross-run unlocks (meta.ts) — gates the shop pool
+  is_daily: boolean;               // seeded daily run (same seed for everyone today)
+  run_stats: RunStats;             // feats tracked for unlocks (meta.ts UNLOCKABLES)
 
   // Shop
   interest_earned_this_cycle: number; // accumulated interest ticks (for shop display)

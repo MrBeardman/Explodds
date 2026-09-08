@@ -18,11 +18,12 @@ const PARAMS = {
   minBetPerCycle: 2,             // MIN_BET_PER_CYCLE — min bet rises each cycle
   betStep: 5,
   fixedDeadlines: [60, 90, 120, 160, 200],
-  deadlineGrowth: 1.22,          // cycle 6+ multiplier
+  deadlineGrowth: 1.25,          // cycle 6+ multiplier
   deadlineWalletChase: 0.55,     // DEADLINE_WALLET_CHASE — next deadline ≥ this × wallet
   emptyFrac: 0.25,               // share of non-bomb tiles that are empty
   tileBase: bet => 0.29 * Math.pow(bet, 0.9),          // TILE_CASH_BET_COEF × bet^TILE_CASH_BET_EXP
-  baseBombs: c => (c <= 5 ? [3, 3, 4, 5, 6][c - 1] : Math.min(6 + Math.floor((c - 5) / 2), 8)),
+  boardCols: c => (c >= 10 ? 7 : c >= 6 ? 6 : 5),    // BOARD_GROWTH — the sim still plays 25 tiles; density is what matters
+  baseBombs: c => (c <= 5 ? [3, 3, 4, 5, 6][c - 1] : Math.round(25 * Math.min(0.22 + (c - 6) * 0.02, 0.34))), // BOMB_DENSITY_* scaled to the sim's 25-tile board
   bombRatioSlope: 6,             // BOMB_RATIO_SLOPE — +1 bomb per 1/6 of wallet bet
   bombRatioCap: 5,               // BOMB_RATIO_CAP
   multGain: bombs => 0.04 + bombs * 0.005,             // MULT_GAIN_BASE + MULT_GAIN_PER_BOMB × bombs

@@ -1,14 +1,16 @@
 import { SYMBOL_MAP } from '../constants';
-import { calcPrestigeEarned } from '../meta';
-import type { GameState } from '../types';
+import { calcPrestigeEarned, UNLOCKABLES, type DailyRecord } from '../meta';
+import type { GameState, RelicId } from '../types';
 import bombSrc from '../assets/bomb.png';
 
 interface Props {
   state: GameState;
+  newUnlocks: RelicId[];
+  daily: DailyRecord | null;
   onRestart: () => void;
 }
 
-export function GameOver({ state, onRestart }: Props) {
+export function GameOver({ state, newUnlocks, daily, onRestart }: Props) {
   // The board only survives into GAME_OVER when the run ended on a bust (the
   // final attempt) — a cashout-based failure already cleared it in handleCashout,
   // since nothing exploded there. Show the classic minesweeper "reveal everything"
@@ -49,7 +51,27 @@ export function GameOver({ state, onRestart }: Props) {
           <StatRow label="Tickets saved"     value={`🎫 ${state.tickets}`} color="#60c0ff" />
           <div className="gold-line my-1" />
           <StatRow label="Prestige earned"   value={`✦ ${calcPrestigeEarned(state.cycles_survived)}`} color="#c084fc" />
+          {daily && (
+            <StatRow label="Daily run — today's best" value={`${daily.best_cycles} cycles (${daily.runs} run${daily.runs === 1 ? '' : 's'})`} color="var(--gold)" />
+          )}
         </div>
+
+        {newUnlocks.length > 0 && (
+          <div className="casino-panel p-3 w-full flex flex-col gap-1.5" style={{ border: '1px solid var(--gold)' }}>
+            <div className="font-mono text-xs text-center" style={{ color: 'var(--gold)', letterSpacing: '0.2em' }}>NEW RELIC UNLOCKED</div>
+            {newUnlocks.map(id => {
+              const u = UNLOCKABLES.find(x => x.id === id);
+              if (!u) return null;
+              return (
+                <div key={id} className="flex items-center gap-2 font-mono text-xs" style={{ color: 'var(--text-primary)' }}>
+                  <span className="text-base">{u.emoji}</span>
+                  <span style={{ color: 'var(--gold)' }}>{u.name}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>— now in the shop pool</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <button
           onClick={onRestart}
@@ -73,7 +95,7 @@ export function GameOver({ state, onRestart }: Props) {
 // shows every tile's true content regardless of what was actually clicked.
 function FinalBoard({ board }: { board: GameState['board'] }) {
   return (
-    <div className="grid grid-cols-5 gap-1 w-full max-w-[220px]">
+    <div className="grid gap-1 w-full max-w-[220px]" style={{ gridTemplateColumns: `repeat(${Math.round(Math.sqrt(board.length)) || 5}, minmax(0, 1fr))` }}>
       {board.map(tile => {
         const wasHit = tile.state === 'bomb_hit';
         return (
