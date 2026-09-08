@@ -406,7 +406,7 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
           >
             {muted ? '🔇' : '🔊'}
           </button>
-          {state.phase !== 'START' && state.phase !== 'GAME_OVER' && (
+          {state.phase !== 'GAME_OVER' && (
             <button
               onClick={() => {
                 if (endGameConfirm) { dispatch({ type: 'END_GAME' }); setEndGameConfirm(false); }
