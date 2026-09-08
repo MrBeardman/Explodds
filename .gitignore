@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# bot playtest bundle (scripts/playtest-bots.mjs)
+.playtest/

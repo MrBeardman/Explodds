@@ -11,6 +11,7 @@ export interface Tile {
   symbol: SymbolId | null;
   consumable: ConsumableId | null;
   combo_highlight: boolean;
+  proven: boolean;                // clicked while provably safe — deduction feedback
 }
 
 // ─── Items ────────────────────────────────────────────────────────────────────
@@ -37,7 +38,10 @@ export type RelicId =
   | 'high_roller'
   | 'bombproof_boots'
   | 'synergist'
-  | 'sixth_sense'
+  | 'ledger'
+  | 'logician'
+  | 'gut_feeling'
+  | 'echo'
   | 'chain_reaction'
   | 'specialist';
 
@@ -52,6 +56,7 @@ export type ConsumableId =
   | 'empty_eraser'
   | 'bomb_detector'
   | 'insurance_ticket'
+  | 'probe'
   | 'mult_vial';
 
 export type BossId =
@@ -63,7 +68,10 @@ export type BossId =
   | 'short_fuse'
   | 'warden'
   | 'inflator'
-  | 'blightbringer';
+  | 'blightbringer'
+  | 'liar'
+  | 'mirror'
+  | 'curfew';
 
 export type EventCardId =
   | 'hot_streak'
@@ -205,6 +213,12 @@ export interface GameState {
   magnet_clears: number;          // clears since last tile_magnet trigger
   player_flags: number[];         // Bomb Sense skill: tile indices guessed as bombs this attempt
   flag_mode: boolean;             // toggled via FLAG button — next tile click flags instead of reveals
+  deduction_streak: number;       // consecutive PROVEN-safe clicks this attempt (a guess resets it)
+  proven_clicks: number;          // proven-safe clicks this attempt (Flawless ticket bonus)
+  guess_clicks: number;           // unproven clicks this attempt
+  gut_feeling_used: boolean;      // Gut Feeling relic: first guess each attempt is bomb-proof, once
+  last_attempt_busted: boolean;   // Echo relic: the previous attempt ended on a bomb
+  pending_probe: boolean;         // Probe consumable armed — next tile click tests instead of reveals
 
   // Board
   board: Tile[];

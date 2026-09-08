@@ -1,4 +1,4 @@
-import { BOSS_MAP, EVENT_CARD_MAP } from '../constants';
+import { BOSS_MAP, EVENT_CARD_MAP, DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN } from '../constants';
 import { isBossCycle } from '../gameLogic';
 import type { GameState } from '../types';
 
@@ -8,6 +8,7 @@ interface Props {
 
 export function HUD({ state }: Props) {
   const boss = state.active_boss ? BOSS_MAP[state.active_boss] : null;
+  const deductionGain = state.relics.includes('logician') ? LOGICIAN_MULT_GAIN : DEDUCTION_MULT_GAIN;
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -34,6 +35,20 @@ export function HUD({ state }: Props) {
               <div key={m} className={`pip ${state.streak >= m ? 'pip-lit' : ''}`} title={`streak ${m}`} />
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* Deduction — proven clicks build a second streak that feeds the multiplier */}
+      <div className="stat-card flex items-center justify-between" title={`A click is PROVEN when the visible numbers make it certainly safe. Each proven click adds +${deductionGain.toFixed(2)} mult; a guess resets both streaks.`}>
+        <div>
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>🧠 PROVEN</div>
+          <div className="font-display text-3xl leading-none mt-1" style={{ color: state.deduction_streak > 0 ? 'var(--green-bright)' : 'var(--text-primary)' }}>
+            {state.deduction_streak}
+          </div>
+        </div>
+        <div className="text-right font-mono text-xs leading-snug" style={{ color: 'var(--text-muted)' }}>
+          <div><span style={{ color: 'var(--green-bright)' }}>{state.proven_clicks}</span> proven · <span style={{ color: state.guess_clicks > 0 ? 'var(--gold)' : 'var(--text-muted)' }}>{state.guess_clicks}</span> guess</div>
+          <div style={{ color: 'var(--text-dim)' }}>+{deductionGain.toFixed(2)} mult each</div>
         </div>
       </div>
 

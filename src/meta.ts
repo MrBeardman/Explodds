@@ -31,9 +31,9 @@ export const SKILLS: SkillDef[] = [
     name: 'Cascade Sense',
     emoji: '🌊',
     levels: [
-      { level: 0, name: 'Untrained', description: 'Empty tiles reveal one at a time — no chain reaction.', cost: 0 },
-      { level: 1, name: 'Attuned',   description: 'A 0-adjacency empty tile cascades open up to 6 connected safe tiles.', cost: 4 },
-      { level: 2, name: 'Mastered',  description: 'A 0-adjacency empty tile cascades open every connected safe tile.', cost: 8 },
+      { level: 0, name: 'Untrained', description: 'Your first click is always safe. Empty tiles reveal one at a time — no chain reaction.', cost: 0 },
+      { level: 1, name: 'Attuned',   description: 'Your first click and its four side neighbours are all bomb-free — a plus-shaped foothold to reason from. Empty 0s cascade up to 6 tiles.', cost: 4 },
+      { level: 2, name: 'Mastered',  description: 'Same plus-shaped opening, and empty 0s cascade without limit.', cost: 8 },
     ],
   },
   {

@@ -5,8 +5,15 @@ import type {
 
 // ─── Cycle deadlines ──────────────────────────────────────────────────────────
 
-const FIXED_DEADLINES = [80, 140, 190, 280, 400];
-const DEADLINE_GROWTH = 1.30;
+// Tuned with `npm run bots` (scripts/playtest-bots.mjs) against the stake-back,
+// sub-linear economy below — see docs/plans/standard-loop-review.md.
+const FIXED_DEADLINES = [60, 90, 120, 160, 200];
+const DEADLINE_GROWTH = 1.22;
+
+// The house notices: next cycle's deadline is never below this fraction of the
+// wallet you walk out of the shop with. Backstop against runaway compounding —
+// the fixed curve above still sets the floor for normal bankrolls.
+export const DEADLINE_WALLET_CHASE = 0.55;
 
 export function calcDeadline(cycle: number): number {
   if (cycle <= 5) return FIXED_DEADLINES[cycle - 1];
@@ -19,36 +26,58 @@ export function calcDeadline(cycle: number): number {
 
 // ─── Base bombs per cycle ─────────────────────────────────────────────────────
 
+// Deliberately gentle: on a 5×5 with numbers on every revealed tile, 2–6 bombs
+// is the range where deduction still decides most clicks. Past ~8 the board is
+// a lottery regardless of skill (bot playtest, docs/plans/standard-loop-review.md),
+// so bombs cap at 8 and late-game pressure comes from the economy instead.
+export const MAX_BASE_BOMBS = 8;
+const EARLY_BOMBS = [3, 3, 4, 5, 6];
 export function getBaseBombs(cycle: number): number {
-  if (cycle <= 2) return 2;
-  if (cycle <= 4) return 4;
-  if (cycle <= 6) return 6;
-  // Endless escalation: +1 bomb every 2 cycles past 7, capped at 14
-  return Math.min(9 + Math.floor((cycle - 7) / 2), 14);
+  if (cycle <= EARLY_BOMBS.length) return EARLY_BOMBS[cycle - 1];
+  return Math.min(6 + Math.floor((cycle - 5) / 2), MAX_BASE_BOMBS); // c6: 6, c7-8: 7, c9+: 8
 }
 
 // ─── Dynamic bomb count ───────────────────────────────────────────────────────
 
+// The bet is a RISK dial: a bigger share of the wallet means a noticeably more
+// dangerous board (+1 bomb per ~17% of wallet, up to +5). Combined with the
+// sub-linear payout below, betting big is a real decision instead of a
+// compounding lever.
+export const BOMB_RATIO_SLOPE = 6;
+export const BOMB_RATIO_CAP = 5;
+export const MAX_BOMBS = 18;
 export function calcBombs(bet: number, wallet: number, cycle: number): number {
   const base = getBaseBombs(cycle);
   const ratio = bet / Math.max(wallet, 1);
-  const bonus = Math.floor(ratio * 5);
-  return Math.min(base + bonus, base + 5, 24);
+  const bonus = Math.floor(ratio * BOMB_RATIO_SLOPE);
+  return Math.min(base + bonus, base + BOMB_RATIO_CAP, MAX_BOMBS);
 }
 
 // ─── Tile cash calculation ────────────────────────────────────────────────────
 
-// Proportional to bet so bigger bets are a real risk/reward choice and the
-// bankroll can compound against the exponential deadline curve.
+// Sub-linear in the bet (exponent 0.9). The old linear formula let a cleared
+// board pay 12–35× the bet, which turned any skilled run into unbounded
+// compounding; now a well-played board returns roughly 2–3× the stake at low
+// bets and less at very large ones, so betting big scales your absolute
+// earnings (to chase a deadline) but never your growth RATE. The stake itself
+// is returned on cashout (see handleCashout) — these numbers are pure winnings.
+export const TILE_CASH_BET_COEF = 0.29;
+export const TILE_CASH_BET_EXP = 0.9;
 export function calcTileBaseCash(bet: number): number {
-  return 3 + bet * 0.4;
+  return TILE_CASH_BET_COEF * Math.pow(Math.max(0, bet), TILE_CASH_BET_EXP);
 }
 
 // ─── Deposit / interest / min-bet scaling ─────────────────────────────────────
 
-export const BASE_INTEREST_RATE = 0.07;       // per successful cashout, on the deposited pool
-export const COMPOUND_CHIP_BONUS_RATE = 0.03; // Compound Chip relic adds this
+export const BASE_INTEREST_RATE = 0.12;       // per successful cashout, on the deposited pool
+export const COMPOUND_CHIP_BONUS_RATE = 0.05; // Compound Chip relic adds this
 export const INFLATOR_INTEREST_MULT = 2;      // Inflator boss doubles the rate
+
+// Collateral: once at least this share of the deadline is deposited, the house
+// relaxes — every attempt that cycle deals one fewer bomb. Gives depositing
+// early something betting can't buy (interest alone never beat positive-EV play).
+export const COLLATERAL_DEPOSIT_FRAC = 0.5;
+export const COLLATERAL_BOMB_RELIEF = 1;
 
 export const MIN_BET_BASE = 10;
 export const MIN_BET_PER_CYCLE = 2;           // gentler than the spec's +$5 — tuned via sim
@@ -58,8 +87,29 @@ export const GREED_MODE_MIN_BET = 25;
 
 export const TICKETS_COMPLETE_ATTEMPT = 1;    // any cashout or bust
 export const TICKETS_SUCCESSFUL_CASHOUT = 2;  // cashed out, didn't bust
-export const TICKETS_PROFITABLE = 3;          // earnings > bet × 1.5
+export const TICKETS_PROFITABLE = 3;          // winnings ≥ bet (stake comes back on top)
+export const PROFITABLE_EARNINGS_RATIO = 1.0;
 export const TICKETS_PAY_IN_FULL = 5;         // deadline fully deposited
+export const TICKETS_FLAWLESS = 2;            // an attempt with no guesses at all
+export const FLAWLESS_MIN_PROVEN = 4;         // …and at least this many proven clicks
+
+// ─── Multiplier growth ─────────────────────────────────────────────────────────
+//
+// Kept deliberately shallow: most of a tile's value is in the base cash so an
+// early click is worth its risk, and a cleared board lands around 2–3× the
+// stake instead of 5×+ (which compounded into immortal runs).
+export const MULT_GAIN_BASE = 0.04;           // per symbol tile
+export const MULT_GAIN_PER_BOMB = 0.005;      // + this × bombs on the board
+export const STREAK_5_MULT = 0.15;
+export const STREAK_10_MULT = 0.35;
+export const STREAK_15_CASH = 5;
+
+// ─── Deduction layer ───────────────────────────────────────────────────────────
+
+export const DEDUCTION_MULT_GAIN = 0.05;      // mult per PROVEN-safe click (on top of the symbol gain)
+export const LOGICIAN_MULT_GAIN = 0.10;       // Logician relic replaces the gain above
+export const ECHO_REVEALED_EMPTIES = 2;       // Echo relic: numbers pre-revealed on the board after a bust
+export const CURFEW_CLICKS = 10;              // Curfew boss: attempt auto-cashes out after this many reveals
 
 // ─── Bomb Sense skill ──────────────────────────────────────────────────────────
 
@@ -171,13 +221,16 @@ export interface BossDef {
 export const BOSSES: BossDef[] = [
   { id: 'monoculturist', name: 'The Monoculturist', emoji: '🍒', description: 'Only 2 symbol types spawn this cycle' },
   { id: 'saboteur',      name: 'The Saboteur',      emoji: '🧨', description: 'Every 4th symbol cleared arms a new bomb' },
-  { id: 'blackout',      name: 'The Blackout',      emoji: '🌑', description: 'Empty tiles show no bomb counts' },
+  { id: 'blackout',      name: 'The Blackout',      emoji: '🌑', description: 'Symbol tiles show no bomb counts — only empties do' },
   { id: 'taxman',        name: 'The Taxman',        emoji: '🧾', description: '25% tax on every cashout' },
   { id: 'glutton',       name: 'The Glutton',       emoji: '🕳', description: '+4 empty tiles on every board' },
   { id: 'short_fuse',    name: 'The Short Fuse',    emoji: '⏱', description: 'Only 2 attempts this cycle' },
   { id: 'warden',        name: 'The Warden',        emoji: '⛓', description: 'Bet locked to 25% of your wallet' },
   { id: 'inflator',      name: 'The Inflator',      emoji: '📈', description: 'Deadline +25% — but double interest if beaten' },
   { id: 'blightbringer', name: 'The Blightbringer', emoji: '🥀', description: 'One random symbol is nerfed to 30% weight' },
+  { id: 'liar',          name: 'The Liar',          emoji: '🤥', description: 'One number on every board is off by one' },
+  { id: 'mirror',        name: 'The Mirror',        emoji: '🪞', description: 'Numbers count diagonal neighbours only' },
+  { id: 'curfew',        name: 'The Curfew',        emoji: '⏰', description: `Attempts end on their own after ${CURFEW_CLICKS} reveals` },
 ];
 
 export const BOSS_MAP = Object.fromEntries(
@@ -197,6 +250,7 @@ export const ALL_CONSUMABLES: ShopConsumableItem[] = [
   { id: 'empty_eraser',     name: 'Empty Eraser',     price: 10, emoji: '🧹', description: 'Removes 2 empty tiles from next board', sold: false },
   { id: 'bomb_detector',    name: 'Bomb Detector',    price: 22, emoji: '📡', description: 'Marks 2 bombs with ⚠ on next board', sold: false },
   { id: 'insurance_ticket', name: 'Insurance Ticket', price: 15, emoji: '🎟', description: 'Next bust: your bet is refunded', sold: false },
+  { id: 'probe',            name: 'Probe',            price: 16, emoji: '🧪', description: 'Test one hidden tile mid-attempt — marks it ⚠ if it is a bomb, safe if not', sold: false },
   // mult_vial removed from the pool for now (starting-mult bonus disabled — confusing for playtest).
   // Type stays in ConsumableId; gameLogic's mult_vial branch is simply unreachable while unsold.
 ];
@@ -232,7 +286,11 @@ export const ALL_RELICS: ShopRelicItem[] = [
   { id: 'bombproof_boots', name: 'Bombproof Boots',  cost: 20, emoji: '🥾', rarity: 'legendary', description: 'First TWO clicks each attempt can never be a bomb (first click is always safe for everyone)', sold: false, owned: false },
   // Combo-crafting expansion
   { id: 'synergist',       name: 'Synergist',        cost: 16, emoji: '🔁', rarity: 'legendary', description: 'Every combo permanently boosts that symbol\'s payout ×1.25 (stacks)', sold: false, owned: false },
-  { id: 'sixth_sense',     name: 'Sixth Sense',      cost: 14, emoji: '👁', rarity: 'rare',      description: 'Cleared symbol tiles also show their adjacent bomb count', sold: false, owned: false },
+  // Deduction expansion — information relics change the SHAPE of what you can prove
+  { id: 'ledger',          name: 'Ledger',           cost: 14, emoji: '📒', rarity: 'rare',      description: 'The bomb total of every row is shown along the board edge', sold: false, owned: false },
+  { id: 'logician',        name: 'Logician',         cost: 12, emoji: '🧠', rarity: 'rare',      description: `Proven-safe clicks give +${LOGICIAN_MULT_GAIN.toFixed(2)} mult instead of +${DEDUCTION_MULT_GAIN.toFixed(2)}`, sold: false, owned: false },
+  { id: 'gut_feeling',     name: 'Gut Feeling',      cost: 12, emoji: '🫀', rarity: 'rare',      description: 'Once per cycle, a guess that would have hit a bomb is spared', sold: false, owned: false },
+  { id: 'echo',            name: 'Echo',             cost: 10, emoji: '📣', rarity: 'common',    description: `After a bust, the next board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
   { id: 'chain_reaction',  name: 'Chain Reaction',   cost: 14, emoji: '💥', rarity: 'rare',      description: '2+ combos in one attempt: cashout earns ×1.5', sold: false, owned: false },
   { id: 'specialist',      name: 'Specialist',       cost: 12, emoji: '🎯', rarity: 'rare',      description: 'Packs favor your most-boosted symbol instead of avoiding it', sold: false, owned: false },
 ];

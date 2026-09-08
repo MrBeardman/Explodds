@@ -5,7 +5,10 @@
 // you change tile cash, bombs, empties, or deadlines.
 //
 // Ignores relics, consumables, events and combos (small positive corrections),
-// so treat results as a slightly pessimistic baseline.
+// so treat results as a slightly pessimistic baseline. Its "skill" knob is a
+// flat risk discount and cannot model real deduction — for anything about the
+// skill layer use `npm run bots` (scripts/playtest-bots.mjs), which plays the
+// actual reducer code. This file is kept as a quick formula cross-check.
 
 // ─── Params (mirror src/constants.ts) ─────────────────────────────────────────
 
@@ -14,15 +17,20 @@ const PARAMS = {
   minBetBase: 10,
   minBetPerCycle: 2,             // MIN_BET_PER_CYCLE — min bet rises each cycle
   betStep: 5,
-  fixedDeadlines: [80, 140, 190, 280, 400],
-  deadlineGrowth: 1.30,          // cycle 6+ multiplier
+  fixedDeadlines: [60, 90, 120, 160, 200],
+  deadlineGrowth: 1.22,          // cycle 6+ multiplier
+  deadlineWalletChase: 0.55,     // DEADLINE_WALLET_CHASE — next deadline ≥ this × wallet
   emptyFrac: 0.25,               // share of non-bomb tiles that are empty
-  tileBase: bet => 3 + bet * 0.4,
-  baseBombs: c => (c <= 2 ? 2 : c <= 4 ? 4 : c <= 6 ? 6 : Math.min(9 + Math.floor((c - 7) / 2), 14)),
-  multGain: bombs => 0.08 + bombs * 0.01,
+  tileBase: bet => 0.29 * Math.pow(bet, 0.9),          // TILE_CASH_BET_COEF × bet^TILE_CASH_BET_EXP
+  baseBombs: c => (c <= 5 ? [3, 3, 4, 5, 6][c - 1] : Math.min(6 + Math.floor((c - 5) / 2), 8)),
+  bombRatioSlope: 6,             // BOMB_RATIO_SLOPE — +1 bomb per 1/6 of wallet bet
+  bombRatioCap: 5,               // BOMB_RATIO_CAP
+  multGain: bombs => 0.04 + bombs * 0.005,             // MULT_GAIN_BASE + MULT_GAIN_PER_BOMB × bombs
+  streak5Mult: 0.15, streak10Mult: 0.35, streak15Cash: 5,
   avgSymbolMod: 1.043,           // weighted mean of symbol modifiers (5 symbols: diamond/cherry/banana/star/bell)
-  baseInterestRate: 0.07,        // BASE_INTEREST_RATE — per cashout, on the deposited pool
+  baseInterestRate: 0.12,        // BASE_INTEREST_RATE — per cashout, on the deposited pool
   inflatorInterestMult: 2,       // INFLATOR_INTEREST_MULT
+  stakeReturned: true,           // cashout returns the bet on top of winnings; bust loses it
 };
 
 function calcMinBet(cycle) {
@@ -52,10 +60,11 @@ function calcDeadline(cycle) {
 
 function calcBombs(bet, wallet, cycle) {
   const base = PARAMS.baseBombs(cycle);
-  return Math.min(base + Math.floor((bet / Math.max(wallet, 1)) * 5), base + 5, 24);
+  return Math.min(base + Math.floor((bet / Math.max(wallet, 1)) * PARAMS.bombRatioSlope), base + PARAMS.bombRatioCap, 18);
 }
 
-const SYMBOL_MODS = [[1.0, 20], [0.8, 20], [1.2, 18], [1.5, 12], [0.9, 18], [2.0, 12]];
+// 5 symbols only (coin was removed) — keep in sync with SYMBOLS in constants.ts
+const SYMBOL_MODS = [[1.0, 20], [0.8, 20], [1.2, 18], [1.5, 12], [0.9, 18]];
 function drawMod(rng) {
   let r = rng() * 100;
   for (const [m, w] of SYMBOL_MODS) { if (r < w) return m; r -= w; }
@@ -101,7 +110,8 @@ function playAttempt(bet, wallet, cycle, rng, { skill, alpha, boss }) {
     const pBomb = (nBomb / hidden) * (1 - skill); // skill = adjacency deduction
     const pSym = nSym / (nSym + nEmpty);
     const expTile = pSym * PARAMS.tileBase(bet) * PARAMS.avgSymbolMod * mult;
-    if (earnings > 0 && pBomb * earnings >= alpha * expTile) break;
+    const atRisk = earnings + (PARAMS.stakeReturned ? bet : 0);
+    if (earnings > 0 && pBomb * atRisk >= alpha * expTile) break;
 
     if (rng() < pBomb) return { earn: 0, busted: true };
     // safe click: symbol or empty proportionally
@@ -109,12 +119,11 @@ function playAttempt(bet, wallet, cycle, rng, { skill, alpha, boss }) {
       nSym--; hidden--;
       earnings += PARAMS.tileBase(bet) * drawMod(rng) * mult;
       mult += gain; streak++;
-      if (streak >= 5 && !s5) { mult += 0.2; s5 = true; }
-      if (streak >= 10 && !s10) { mult += 0.5; s10 = true; }
-      if (streak >= 15 && !s15) { earnings += 5; s15 = true; }
+      if (streak >= 5 && !s5) { mult += PARAMS.streak5Mult; s5 = true; }
+      if (streak >= 10 && !s10) { mult += PARAMS.streak10Mult; s10 = true; }
+      if (streak >= 15 && !s15) { earnings += PARAMS.streak15Cash; s15 = true; }
     } else {
-      nEmpty--; hidden--;
-      streak = 0; s5 = s10 = s15 = false;
+      nEmpty--; hidden--; // empties no longer break the streak (guesses do — not modelled here)
     }
     // approximate: the player's dodged bombs stay on the board
   }
@@ -134,7 +143,8 @@ function playRunWithDepositPolicy(profile, depositMode, rng, maxCycles = 60) {
   let wallet = PARAMS.startingWallet;
   for (let cycle = 1; cycle <= maxCycles; cycle++) {
     const boss = bossForCycle(rng, cycle);
-    let deadline = calcDeadline(cycle);
+    // The house notices: deadline never sits below a share of the wallet
+    let deadline = Math.max(calcDeadline(cycle), Math.round((wallet * PARAMS.deadlineWalletChase) / 10) * 10);
     if (boss === 'inflator') deadline = Math.round((deadline * 1.25) / 10) * 10;
     const attempts = boss === 'short_fuse' ? 2 : 3;
     const minBet = calcMinBet(cycle);
@@ -160,7 +170,8 @@ function playRunWithDepositPolicy(profile, depositMode, rng, maxCycles = 60) {
       wallet -= bet;
       const { earn, busted } = playAttempt(bet, pre, cycle, rng, { ...profile, boss });
       if (!busted) {
-        wallet += earn + deposited * interestRate; // interest only on a successful cashout
+        // stake comes back on cashout; interest only on a successful cashout
+        wallet += (PARAMS.stakeReturned ? bet : 0) + earn + deposited * interestRate;
       }
     }
 

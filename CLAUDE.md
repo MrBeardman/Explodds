@@ -34,18 +34,19 @@ new decision this session added — see "Deposit & Interest" below.
 instead a seeded boss rule warps the whole cycle (see Bosses section). The shop
 previews the upcoming boss so players can prep. Beating one pays +8🎫.
 
-**Skill layer:** revealed empty tiles show a minesweeper-style number = count of adjacent
-bombs (8-neighborhood). Empties give no cash and break the streak, but they are the
-information layer — players use the numbers to deduce safe tiles. Clicking a 0-adjacency
-empty tile **cascades open connected safe tiles** (`floodFillReveal` in gameLogic.ts)
-exactly like classic minesweeper — a real deduction payoff, not just a click-one-at-a-time
-slog, and any symbol tiles caught in the cascade get revealed and paid out too. **How much
-it cascades is gated behind the Cascade Sense meta-skill** (see "Meta-Progression / Skill
-Tree" below) — level 0 (new-player default) reveals only the clicked tile, no chain at
-all; level 1 caps the chain at `CASCADE_LEVEL1_CAP` (6) tiles; level 2 is the unlimited
-version described above. The **first click of every attempt can never be a bomb** (baseline
-fairness rule — no information-free instant death; Bombproof Boots relic extends this
-to the first two clicks). The **paytable**
+**Skill layer (see "Deduction Layer" below — read it before touching clicks):** EVERY
+revealed safe tile (symbol or empty) shows a minesweeper-style number = count of adjacent
+bombs. `src/deduction.ts` is the single source of truth for what number a tile shows and
+what the player can PROVE from the visible board; the reducer tags every deliberate click
+as **proven** or a **guess**, proven clicks build a deduction streak that feeds the
+multiplier, a guess resets both streaks. Empty tiles pay nothing but no longer break the
+streak. Clicking a 0-adjacency empty tile **cascades open connected safe tiles**
+(`floodFillReveal`) like classic minesweeper — level 0 of the Cascade Sense meta-skill
+reveals only the clicked tile, level 1 caps the chain at `CASCADE_LEVEL1_CAP` (6), level 2
+is unlimited. The **first click of every attempt is a guaranteed-safe opening**: bombs are
+*relocated* (swapped with a hidden safe tile, so the 💣 counter stays honest) out of the
+clicked tile (Cascade Sense 0) or the plus shape around it (levels 1–2); Bombproof Boots
+extends the single-tile guarantee to click 2. The **paytable**
 (top-left) shows GENERAL odds + payout per symbol — weight-share and cash value at the
 current bet/mult, the same formula whether you're still betting or mid-attempt. It is
 **deliberately NOT counted from this specific board's remaining tiles** (that read as
@@ -67,11 +68,17 @@ This is a second permanent build axis alongside relics and packs.
 permanent symbol boosts (frequency or payout, on a specific symbol) — pick 1, keep it
 forever. This is the "build a strategy around one symbol" layer.
 
-**Balance harness:** `npm run sim` (scripts/sim.mjs) Monte-Carlos the economy across
-skill levels and bet styles, modeling both "deposit early for interest" and "defer
-deposits" strategies (takes whichever wins, like a real player would). Its params
-block mirrors constants.ts — KEEP IN SYNC when tuning formulas. Target: random
-clicker dies ~cycle 2, decent play ~2-4, expert ~3-8+ with deep runs possible.
+**Balance harness:** `npm run bots` (scripts/playtest-bots.mjs) is the real one — it
+bundles `src/gameLogic.ts` + `src/deduction.ts` with rolldown into `.playtest/` and plays
+whole runs through the actual reducer with a random clicker and a constraint-solving bot
+(perfect or noisy deducer, any bet fraction, any relics), reporting cycles survived,
+bust rate and the proven/guess split. Modes: `profiles` (default), `bycycle`, `trace
+<seed>`, `density <cascadeLevel>`. `npm run sim` (scripts/sim.mjs) is the older
+hand-mirrored Monte-Carlo — its "skill" knob is a flat risk discount that cannot model
+deduction, so use it only as a formula cross-check; keep its PARAMS block in sync anyway.
+Targets (bots, median cycles): random ~2, noisy deducer 3–4, perfect deducer at min bet
+~6, perfect deducer betting 30% ~6–9 (more with deduction relics), nobody immortal. Full
+findings + rationale: `docs/plans/standard-loop-review.md`.
 
 ---
 
@@ -327,6 +334,11 @@ the minesweeper flood-fill (`floodFillReveal` in gameLogic.ts) can chain:
 - **Level 2 (mastered)** — `floodFillReveal(board, tileIndex)` with no cap
   (`Infinity`), today's original unlimited cascade.
 
+**Cascade Sense also sets the opening** (see `openingTiles` in gameLogic.ts): level 0
+protects only the clicked tile; levels 1–2 protect the plus shape (clicked + 4 orthogonal
+neighbours). A full 3×3 opening was tried and rejected — on a 5×5 it hands over 36% of
+the board and a perfect deducer then proves everything at any bomb count.
+
 **Second skill: Bomb Sense** (`SkillId = 'bomb_flag'`, 5 levels) lets the player
 flag suspected bomb tiles during CLEARING for a bonus when the attempt ends:
 - **Level 0 (new-player default)** — cannot flag at all (`maxPlayerFlags` returns 0,
@@ -366,28 +378,34 @@ progression only ever happens via the Start Screen's SkillTree.
 
 ```typescript
 // Deadlines
-cycle 1–5: [80, 140, 190, 280, 400]
-cycle 6+:  Math.round(prev * 1.30 / 10) * 10
-Inflator boss: deadline × 1.25 (applied in startNextCycle)
+cycle 1–5: [60, 90, 120, 160, 200]
+cycle 6+:  Math.round(prev * 1.22 / 10) * 10
+"The house notices": next deadline = max(curve, round(wallet × DEADLINE_WALLET_CHASE(0.55)))
+  — the backstop against runaway compounding; irrelevant for normal bankrolls
+Inflator boss: deadline × 1.25 (applied in startNextCycle, after the chase)
 
 // Min bet — RISES EVERY CYCLE, not flat
 minBet = MIN_BET_BASE(10) + cycle_number × MIN_BET_PER_CYCLE(2)
 Greed Mode event: max(minBet, GREED_MODE_MIN_BET=25)
 
-// Base bombs per cycle (cycle 2 gentled from 3→2 after playtest feedback that
-// the cycle 1→2 jump felt too steep this early)
-cycle 1-2: 2 | 3-4: 4 | 5-6: 6 | 7+: min(9 + floor((cycle-7)/2), 14)
+// Base bombs per cycle — capped at MAX_BASE_BOMBS (8): on a 5×5 with numbers on
+// every tile, past ~8 bombs the board is a lottery regardless of skill
+cycle 1-5: [3, 3, 4, 5, 6] | 6+: min(6 + floor((cycle-5)/2), 8)
 
-// Dynamic bomb count (from bet) — see effectiveBombs() in gameLogic
-bombs = base + floor((bet / wallet) × 5), capped at base + 5, max 24
+// Dynamic bomb count (from bet) — the bet is a RISK dial, see effectiveBombs()
+bombs = base + floor((bet / wallet) × BOMB_RATIO_SLOPE(6)), capped at base + 5, max 18
 +3 extra if Danger Pay event active
 −2 if High Roller relic and bet ≥ 50% of wallet
+−1 Collateral: if deposited ≥ 50% of the deadline (COLLATERAL_DEPOSIT_FRAC)
 
-// Tile cash (proportional to bet so bankroll can compound vs exponential deadlines)
-baseCash = 3 + bet × 0.4
+// Tile cash — SUB-LINEAR in the bet (the old linear 3 + 0.4×bet let a cleared
+// board pay 12–35× the bet and any skilled run compounded without bound)
+baseCash = TILE_CASH_BET_COEF(0.29) × bet ^ TILE_CASH_BET_EXP(0.9)
 cash = baseCash × symbolModifier × multiplier
    [× 1.4 if Danger Pay]
    [× 1.5 for star if Star Shower]
+// The STAKE IS RETURNED on cashout (wallet += bet + winnings); a bust loses it.
+// A well-played board returns ~2–3× the stake.
 
 // Symbol modifiers (getSymbolMod — takes full state, not just event/relic flags)
 // 5 symbols only — coin was removed (too many symbols for a 5×5 grid; see
@@ -405,19 +423,21 @@ base weight × 2 if matching event card (cherry_season/banana_bonanza/star_showe
 start = 1.0 (1.3 with Head Start) + (carry_multiplier − 1) + 0.5 if Mult Vial
 carry_multiplier = 1 + (prev mult − 1) × 0.5 with Momentum Core (cashout AND bust), else 1.0
 
-// Multiplier growth per symbol tile
-gain = 0.08 + (bombs × 0.01)
+// Multiplier growth per symbol tile (deliberately shallow — value lives in base cash)
+gain = MULT_GAIN_BASE(0.04) + bombs × MULT_GAIN_PER_BOMB(0.005)
 gain ×= 1.2 if Adrenaline Core relic
++DEDUCTION_MULT_GAIN (0.05) per PROVEN click (LOGICIAN_MULT_GAIN 0.10 with Logician)
 
-// Streak milestones
-streak 5:  +0.2 mult (or +$8 if Hot Hands relic)
-streak 10: +0.5 mult
+// Streak milestones (streak = consecutive symbol tiles; empties PAUSE it, a GUESS resets it)
+streak 5:  +0.15 mult (or +$8 if Hot Hands relic)
+streak 10: +0.35 mult
 streak 15: +$5 flat
 
 // Cashout tickets (ALL additive)
 +1 complete attempt (cashout OR bust — awarded on bust directly in handleTileClick)
 +2 successful cashout specifically (not on bust)
-+3 profitable clear (earnings > bet × 1.5)
++3 profitable clear (winnings ≥ bet × PROFITABLE_EARNINGS_RATIO(1.0) — stake comes back on top)
++2 Flawless: guess_clicks === 0 && proven_clicks ≥ FLAWLESS_MIN_PROVEN(4)
 +2 if Ticket Printer relic
 +5 pay deadline in full (resolveCycleSuccess)
 +8 beating a boss cycle (resolveCycleSuccess, on top of the +5)
@@ -431,9 +451,13 @@ streak 15: +$5 flat
 // Bust refunds (best single protection applies, in this order)
 Bomb Suit (full bet, once/cycle) > Insurance Ticket (full bet, consumed) > Insurance Policy (30%)
 
-// Safe-click guarantee (baseline rule, not paywalled)
-Click 1 of every attempt can never be a bomb (converts to empty) — no
-information-free instant death. Bombproof Boots relic extends this to click 2.
+// Opening (baseline rule, not paywalled) — see relocateBombs()/openingTiles()
+Click 1 of every attempt can never be a bomb: bombs under the protected tiles are
+SWAPPED with random hidden safe tiles (count unchanged). Cascade Sense 0 protects the
+clicked tile, levels 1–2 the plus shape around it. Bombproof Boots extends the
+single-tile guarantee to click 2. Gut Feeling relic: once per CYCLE, a guess that
+would bust is spared the same way. Cashout needs clicks_this_attempt ≥ 2 (reducer
+guard) so "free click, cash out" isn't a loop.
 
 // Bomb Sense flag bonus (Bomb Sense meta-skill, calcFlagBonus)
 +BOMB_FLAG_BONUS ($8) per correctly-flagged bomb, paid on BOTH cashout
@@ -441,6 +465,34 @@ information-free instant death. Bombproof Boots relic extends this to click 2.
 ```
 
 ---
+
+## Deduction Layer (src/deduction.ts)
+
+Pure functions, no React, shared by the Grid (rendering) and the reducer (tagging):
+
+```typescript
+numberNeighbors(state, i)         // 8-neighbourhood, or diagonals only under Mirror
+displayedNumber(state, board, i)  // number the tile SHOWS, or null: revealed safe tiles only,
+                                  // symbol tiles go dark under Blackout, Liar tile is off by one
+rowColTotals(board)               // Ledger relic (rows shown; cols computed, not shown)
+analyzeBoard(state, board)        // { safe, bombs, hasInfo } — constraint propagation to a
+                                  // fixpoint over: every shown number, hinted (safe) and
+                                  // ⚠/scanner-revealed (bomb) tiles, the 💣 counter as a
+                                  // global constraint, Ledger row totals; plus the subset rule
+isProvablySafe(state, board, i)
+```
+
+In `handleTileClick`, every click after the free opening is `proven =
+analyzeBoard(state, state.board).safe.has(i)` (computed on the board the player SAW,
+before any relocation). State: `deduction_streak` (proven in a row; guess → 0),
+`proven_clicks`/`guess_clicks` (per attempt, for the Flawless ticket bonus), and
+`Tile.proven` (green edge on the tile). A guess also resets the symbol streak; an empty
+tile no longer resets anything. Never call the game "proven" using information the
+player couldn't see — that's why Grid reads `displayedNumber`, not `adjacentBombCount`
+(which is the honest count, still used by the flood fill and the debug ghost view).
+
+Bot harness: `scripts/playtest-bots.mjs` uses the same `analyzeBoard` from the bundle, so
+its proven/guess split is exactly the game's.
 
 ## Combo System
 
@@ -531,9 +583,16 @@ bonus disabled for playtesting) — listed below for reference but not in the sh
 | high_roller | Bets ≥ 50% wallet: −2 bombs | 12🎫 | rare |
 | bombproof_boots | Extends the baseline safe-click guarantee to clicks 1 AND 2 | 20🎫 | legendary |
 | synergist | Every combo permanently boosts that symbol's payout ×1.25 (stacks) | 16🎫 | legendary |
-| sixth_sense | Cleared symbol tiles also show their adjacent bomb count | 14🎫 | rare |
 | chain_reaction | 2+ combos in one attempt: cashout earns ×1.5 | 14🎫 | rare |
 | specialist | Packs favor your most-boosted symbol instead of avoiding it | 12🎫 | rare |
+| ledger | Row bomb totals shown along the board's right edge (extra constraints for the solver) | 14🎫 | rare |
+| logician | Proven clicks give +0.10 mult instead of +0.05 | 12🎫 | rare |
+| gut_feeling | Once per cycle, a guess that would bust is spared (bomb relocated) | 12🎫 | rare |
+| echo | After a bust, the next board starts with 2 empties already revealed | 10🎫 | common |
+
+`sixth_sense` was retired — numbers on every revealed tile is now the baseline rule
+(it was a 6× run-length multiplier as a single relic). Ledger is deliberately
+rows-only: rows+columns made most boards fully determined in the bot test.
 
 Max 6 relics active by default (`state.max_relic_slots`, starts at `MAX_ACTIVE_RELICS`)
 — buyable up the Relic Case shop item, see below. Relic reroll costs 2🎫.
@@ -542,10 +601,9 @@ Max 6 relics active by default (`state.max_relic_slots`, starts at `MAX_ACTIVE_R
 every combo-trigger block in `handleTileClick` (cherry_rush→cherry, banana_split→banana,
 star_power→star, bell_storm→bell, diamond_run→diamond, coin_jackpot→coin), pushing a
 payout `SymbolBoost` for that symbol straight into `state.boosts` — same stacking
-mechanism as pack-bought boosts, just earned through play instead of bought. `sixth_sense`
-extends the minesweeper deduction layer from empty tiles to symbol tiles (Grid.tsx:
-`adjacentBombs` is computed for `tile.state === 'revealed' && tile.type === 'symbol'`
-too when owned, rendered as a small corner badge in `TileContent`). `chain_reaction`
+mechanism as pack-bought boosts, just earned through play instead of bought. `sixth_sense` was retired
+in the deduction rework (numbers on every revealed tile are now the baseline — see the
+Deduction Layer section). `chain_reaction`
 is a flat multiplicative reward in `handleCashout`, checked via
 `state.combos_triggered.length >= 2` — inspired by Balatro/CloverPit's "synergy stacking"
 design (see Design Notes in ROADMAP.md).
@@ -569,6 +627,12 @@ Boss cycles have NO event card. Beating one: +8🎫 (BOSS_REWARD_TICKETS).
 | warden | Bet locked to 25% of wallet (getLockedBet) | reducer + LeftPanel |
 | inflator | Deadline +25%, interest rate ×2 if beaten | startNextCycle + interestRate |
 | blightbringer | One random symbol nerfed to 30% weight | getSymbolWeights |
+| liar | One tile per attempt (seeded) shows its count ±1 — a "proven" click that trusts it can bust | deduction.ts `liarTile`/`displayedNumber` |
+| mirror | Numbers count diagonal neighbours only | deduction.ts `numberNeighbors` |
+| curfew | Attempt auto-cashes out after `CURFEW_CLICKS` (10) reveals | handleTileClick |
+
+Blackout now hides numbers on SYMBOL tiles only (empties keep theirs) — i.e. it puts the
+player back at the pre-rework information level instead of deleting the skill layer.
 
 ---
 
@@ -671,6 +735,7 @@ Mult Vial is temporarily pulled from the pool (starting-mult bonus disabled).
 | empty_eraser | $10 | Board generation | -2 empty tiles |
 | bomb_detector | $22 | Board generation | Marks 2 bombs 'flagged' (⚠, still clickable) |
 | insurance_ticket | $15 | On bust (passive) | Refunds the bet, consumed |
+| probe | $16 | CLEARING (button, like scanner) | Test one hidden tile: ⚠ (`flagged`) if bomb, `hinted` if safe; consumed |
 | mult_vial *(not sold)* | $20 | Board generation | Next attempt starts +0.5 mult |
 
 scatter_reveal, empty_eraser, bomb_detector and mult_vial are auto-consumed at board
@@ -785,10 +850,11 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 | DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — may end the cycle immediately |
 | PLACE_CONSUMABLE | Tile click in PLACEMENT | assign consumable to tile |
 | SKIP_PLACEMENT | Button | skip remaining placements → CLEARING |
-| TILE_CLICK | Grid click | handleTileClick — routes to toggleFlag if flag_mode, else symbol/empty/bomb logic |
-| ACTIVATE_SCANNER | Button | set pending_scanner_axis, clears flag_mode |
+| TILE_CLICK | Grid click | handleTileClick — routes to toggleFlag if flag_mode, applyProbe if pending_probe, applyScanner if scanner armed, else opening/proven-tagging → symbol/empty/bomb logic |
+| ACTIVATE_SCANNER | Button | set pending_scanner_axis, clears flag_mode/pending_probe |
+| ACTIVATE_PROBE / CANCEL_PROBE | PROBE button | arm/disarm the Probe consumable (next tile click tests instead of reveals) |
 | TOGGLE_FLAG_MODE | FLAG BOMB button | flips flag_mode (Bomb Sense skill), clears pending_scanner_axis; no-op if maxPlayerFlags is 0 |
-| CASHOUT | Button | handleCashout → phase RESULTS; computed toBetPhase/settleFinalAttempt result stashed in pending_next_phase |
+| CASHOUT | Button | no-op unless clicks_this_attempt ≥ 2; handleCashout → wallet += stake + winnings, phase RESULTS; computed toBetPhase/settleFinalAttempt result stashed in pending_next_phase |
 | DISMISS_RESULTS | ResultsOverlay CONTINUE | dismissResults — applies pending_next_phase, clears pending_results |
 | BUST_FLASH_END | CONTINUE button (after ~700ms reveal) | → toBetPhase or settleFinalAttempt |
 | CLEAR_COMBO_DISPLAY | 2.5s useEffect | clear active_combo_display |
@@ -809,6 +875,24 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 ---
 
 ## Common Pitfalls
+
+- **Numbers are read through `displayedNumber`, not `adjacentBombCount`.** The Grid and
+  `analyzeBoard` must agree on what the player sees (Blackout/Mirror/Liar all live in
+  deduction.ts). `adjacentBombCount`/`trueNumber` are the honest counts for mechanics.
+- **`proven` is computed on `state.board` (pre-click), never on the relocated board** —
+  the opening/Gut Feeling relocation happens after the player committed.
+- **Bombs are relocated, never deleted**, by `relocateBombs` (swap with a hidden safe
+  tile). It only decrements `bombs_this_attempt` in the no-candidate fallback. Don't
+  reintroduce the old "convert to empty" guarantee — it silently lowered the bomb count.
+- **The Saboteur + cascade NaN bug**: the cascade loop must skip tiles whose type is no
+  longer `'symbol'` (Saboteur arms bombs mid-cascade) — `applySymbolTileReveal` assumes
+  `tile.symbol` is set.
+- **Cascade Sense level 1 vs 2 differ only in the empty-cascade cap** — the opening
+  (plus shape) is identical. Level 0 = single-tile opening, no cascade.
+- **A guess resets the symbol streak; an empty does not.** Milestone flags reset with it.
+- **Tile cash is sub-linear and the stake comes back.** Anything that reasons about
+  "earnings vs bet" (profitable-clear tickets, bot cashout rules, UI copy) must treat the
+  bet as returned money, not spent money. `total_earned` counts winnings only.
 
 - **`state.player_flags` (Bomb Sense guesses) is a completely separate concept from
   `Tile.state === 'flagged'`** (Bomb Detector consumable's "this hidden tile IS a
@@ -897,14 +981,11 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 - Sounds are played by the `useSounds` hook in App.tsx, which diffs consecutive
   states — the reducer must stay pure. New audible moments need a diff rule there.
 - When tuning any economy formula, mirror the change in `scripts/sim.mjs` PARAMS and run `npm run sim`.
-- **Sixth Sense's bomb-count badge only appears on tiles actually clicked/revealed
-  this attempt** (`tile.state === 'revealed'`) — it is NOT the same thing as the
-  DebugPanel's "REVEAL BOARD" ghost overlay, which peeks every hidden tile's true
-  content without touching game state at all. Toggling Sixth Sense on and then
-  looking at a ghost-revealed (still-hidden) board will show nothing, correctly —
-  that's not a bug, the two features are unrelated. `DebugGhost` does separately
-  show adjacency numbers on its own peek overlay (for testing convenience), but
-  that's independent of whether Sixth Sense is owned.
+- **Adjacency numbers only appear on tiles actually revealed this attempt** (`revealed`
+  symbol tiles and `empty_revealed` empties, via `displayedNumber`) — that is NOT the same
+  thing as the DebugPanel's "REVEAL BOARD" ghost overlay, which peeks every hidden tile's
+  true content (and honest count) without touching game state. A ghost-revealed
+  still-hidden tile showing a number in the overlay but not in play is correct, not a bug.
 - `MAX_SHOP_ITEMS` is now **3** (was 5) — governs both `shop_consumables` and
   `shop_relics` pool sizes. Packs use their own `PACK_SLOT_COUNT` (3), not this
   constant.

@@ -45,6 +45,8 @@ type Action =
   | { type: 'TILE_CLICK'; index: number }
   | { type: 'ACTIVATE_SCANNER'; axis: 'row' | 'col' }
   | { type: 'CANCEL_SCANNER' }
+  | { type: 'ACTIVATE_PROBE' }
+  | { type: 'CANCEL_PROBE' }
   | { type: 'TOGGLE_FLAG_MODE' }
   | { type: 'CASHOUT' }
   | { type: 'DISMISS_RESULTS' }
@@ -132,17 +134,25 @@ function reducer(state: GameState, action: Action): GameState {
       return handleTileClick(state, action.index);
 
     case 'ACTIVATE_SCANNER':
-      return { ...state, pending_scanner_axis: action.axis, flag_mode: false };
+      return { ...state, pending_scanner_axis: action.axis, flag_mode: false, pending_probe: false };
+
+    case 'ACTIVATE_PROBE':
+      if (state.phase !== 'CLEARING' || !state.consumables_owned.includes('probe')) return state;
+      return { ...state, pending_probe: true, pending_scanner_axis: null, flag_mode: false };
+
+    case 'CANCEL_PROBE':
+      return { ...state, pending_probe: false };
 
     case 'CANCEL_SCANNER':
       return { ...state, pending_scanner_axis: null };
 
     case 'TOGGLE_FLAG_MODE':
       if (state.phase !== 'CLEARING' || maxPlayerFlags(state) <= 0) return state;
-      return { ...state, flag_mode: !state.flag_mode, pending_scanner_axis: null };
+      return { ...state, flag_mode: !state.flag_mode, pending_scanner_axis: null, pending_probe: false };
 
     case 'CASHOUT': {
-      if (state.phase !== 'CLEARING') return state;
+      // The opening click is free — cashing out needs at least one deliberate reveal
+      if (state.phase !== 'CLEARING' || state.clicks_this_attempt < 2) return state;
       return handleCashout(state);
     }
 
@@ -554,13 +564,16 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
   const previewTileCash = calcTileBaseCash(displayBet)
     * (state.active_events.includes('danger_pay') ? 1.4 : 1);
 
-  const canCashout = isClearing && state.attempt_earnings >= 0.01;
+  // Cashout returns the stake plus winnings; it opens up after the free opening click
+  const canCashout = isClearing && state.clicks_this_attempt >= 2;
   // Cashing out now would let a deposit of everything clear the deadline
   const cashoutCoversDebt = state.deposited + state.wallet + state.attempt_earnings >= state.deadline;
 
-  // Scanner state
+  // Scanner / Probe state
   const hasScanner = state.consumables_owned.includes('scanner');
   const scannerActive = state.pending_scanner_axis !== null;
+  const hasProbe = state.consumables_owned.includes('probe');
+  const probeActive = state.pending_probe;
 
   // Bomb Sense flag state
   const flagCap = maxPlayerFlags(state);
@@ -758,7 +771,9 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
               : '1px solid var(--border)',
           }}
         >
-          {canCashout ? (<>CASHOUT<br />+${state.attempt_earnings.toFixed(2)}</>) : 'CASHOUT'}
+          {canCashout
+            ? (<>CASHOUT<br /><span className="text-sm">+${state.attempt_earnings.toFixed(2)} · stake back</span></>)
+            : (<>CASHOUT<br /><span className="text-xs font-mono" style={{ letterSpacing: 0 }}>reveal one more tile</span></>)}
         </button>
       )}
 
@@ -774,6 +789,21 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
           }}
         >
           🚩 {state.flag_mode ? `FLAGGING (${flagsUsed}/${flagCap})` : `FLAG BOMB (${flagsUsed}/${flagCap})`}
+        </button>
+      )}
+
+      {/* Probe: test one tile without revealing it */}
+      {isClearing && hasProbe && (
+        <button
+          onClick={() => dispatch({ type: probeActive ? 'CANCEL_PROBE' : 'ACTIVATE_PROBE' })}
+          className="font-mono text-xs px-2 py-1.5 rounded cursor-pointer"
+          style={{
+            background: probeActive ? 'rgba(192,132,252,0.15)' : 'var(--bg-raised)',
+            border: `1px solid ${probeActive ? '#c084fc' : 'var(--border)'}`,
+            color: probeActive ? '#c084fc' : 'var(--text-muted)',
+          }}
+        >
+          🧪 {probeActive ? 'PROBING — pick a tile' : `PROBE (${state.consumables_owned.filter(c => c === 'probe').length})`}
         </button>
       )}
 
@@ -817,11 +847,11 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
       )}
 
       {/* Consumable shelf */}
-      {state.consumables_owned.filter(c => c !== 'scanner').length > 0 && (
+      {state.consumables_owned.filter(c => c !== 'scanner' && c !== 'probe').length > 0 && (
         <div className="flex flex-col gap-1">
           <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ITEMS</div>
           <div className="flex flex-wrap gap-1.5">
-            {state.consumables_owned.filter(c => c !== 'scanner').map((c, i) => {
+            {state.consumables_owned.filter(c => c !== 'scanner' && c !== 'probe').map((c, i) => {
               const def = ALL_CONSUMABLES.find(x => x.id === c);
               return (
                 <span key={i} title={`${def?.name}: ${def?.description}`} className="slot cursor-default">

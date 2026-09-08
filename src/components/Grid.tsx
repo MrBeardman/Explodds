@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { SYMBOL_MAP, ALL_CONSUMABLES } from '../constants';
 import { adjacentBombCount } from '../gameLogic';
+import { displayedNumber, rowColTotals } from '../deduction';
 import type { GameState, Tile } from '../types';
 import bombSrc from '../assets/bomb.png';
 
@@ -20,19 +21,20 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
     const tile = board[index];
     if (!tile || tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return;
     if (phase !== 'CLEARING') return;
-    // Flagging a tile doesn't reveal it — skip the reveal-pop animation
-    if (state.flag_mode) { onTileClick(index); return; }
+    // Flagging or probing a tile doesn't reveal it — skip the reveal-pop animation
+    if (state.flag_mode || state.pending_probe) { onTileClick(index); return; }
     setAnimating(prev => new Set(prev).add(index));
     onTileClick(index);
     setTimeout(() => setAnimating(prev => { const n = new Set(prev); n.delete(index); return n; }), 520);
-  }, [board, onTileClick, phase, state.flag_mode]);
+  }, [board, onTileClick, phase, state.flag_mode, state.pending_probe]);
 
   const scannerActive = state.pending_scanner_axis !== null;
+  const probeActive = state.pending_probe;
   const flagModeActive = state.flag_mode;
   const playerFlags = state.player_flags;
   const isBustFlash = phase === 'BUST_FLASH';
-  const blackout = state.active_boss === 'blackout';
-  const sixthSense = state.relics.includes('sixth_sense');
+  // Ledger relic: bomb totals per row along the board's right edge
+  const ledger = state.relics.includes('ledger') && board.length > 0 ? rowColTotals(board) : null;
   const bombsHidden = board.filter(t => t.type === 'bomb' && (t.state === 'hidden' || t.state === 'flagged')).length;
   const safeHidden  = board.filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted')).length;
   const emptyHidden = board.filter(t => t.type === 'empty' && t.state === 'hidden').length;
@@ -56,27 +58,34 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
 
       {/* Grid */}
       <div className="relative">
-        <div className="grid grid-cols-5 gap-1.5">
-          {board.map((tile) => (
-            <GridTile
-              key={tile.index}
-              tile={tile}
-              adjacentBombs={
-                !blackout && (tile.state === 'empty_revealed' || (sixthSense && tile.state === 'revealed' && tile.type === 'symbol'))
-                  ? adjacentBombCount(board, tile.index)
-                  : 0
-              }
-              ghostAdjacentBombs={debugReveal ? adjacentBombCount(board, tile.index) : 0}
-              isAnimating={animating.has(tile.index)}
-              scannerActive={scannerActive}
-              flagModeActive={flagModeActive}
-              playerFlagged={playerFlags.includes(tile.index)}
-              clearing={phase === 'CLEARING'}
-              onClick={handleClick}
-              debugReveal={debugReveal}
-              revealAll={revealAll}
-            />
-          ))}
+        <div
+          className="grid gap-1.5"
+          style={{ gridTemplateColumns: ledger ? 'repeat(5, minmax(0, 1fr)) 1.25rem' : 'repeat(5, minmax(0, 1fr))' }}
+        >
+          {board.map((tile) => {
+            const cell = (
+              <GridTile
+                key={tile.index}
+                tile={tile}
+                adjacentBombs={displayedNumber(state, board, tile.index) ?? 0}
+                ghostAdjacentBombs={debugReveal ? adjacentBombCount(board, tile.index) : 0}
+                isAnimating={animating.has(tile.index)}
+                scannerActive={scannerActive}
+                probeActive={probeActive}
+                flagModeActive={flagModeActive}
+                playerFlagged={playerFlags.includes(tile.index)}
+                clearing={phase === 'CLEARING'}
+                onClick={handleClick}
+                debugReveal={debugReveal}
+                revealAll={revealAll}
+              />
+            );
+            // Ledger: a row total after every 5th tile
+            if (ledger && tile.index % 5 === 4) {
+              return [cell, <LedgerCell key={`row-${tile.index}`} value={ledger.rows[Math.floor(tile.index / 5)]} title="bombs in this row" />];
+            }
+            return cell;
+          })}
         </div>
 
         {/* Bust flash overlay — only during the brief initial flash, before the
@@ -115,6 +124,20 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
   );
 }
 
+// ─── Ledger edge cell ─────────────────────────────────────────────────────────
+
+function LedgerCell({ value, title }: { value: number; title: string }) {
+  return (
+    <div
+      className="flex items-center justify-center font-mono text-xs leading-none min-h-5"
+      style={{ color: value > 0 ? 'var(--red)' : 'var(--text-dim)' }}
+      title={title}
+    >
+      {value}
+    </div>
+  );
+}
+
 // ─── Single tile ──────────────────────────────────────────────────────────────
 
 interface TileProps {
@@ -123,6 +146,7 @@ interface TileProps {
   ghostAdjacentBombs: number;
   isAnimating: boolean;
   scannerActive: boolean;
+  probeActive: boolean;
   flagModeActive: boolean;
   playerFlagged: boolean;
   clearing: boolean;
@@ -131,7 +155,7 @@ interface TileProps {
   revealAll?: boolean;
 }
 
-function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, flagModeActive, playerFlagged, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
+function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scannerActive, probeActive, flagModeActive, playerFlagged, clearing, onClick, debugReveal, revealAll = false }: TileProps) {
   const isHidden    = tile.state === 'hidden';
   const isHinted    = tile.state === 'hinted';
   const isFlagged   = tile.state === 'flagged';
@@ -156,10 +180,11 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
     borderColor = 'rgba(200,50,50,0.5)';
   } else if (isRevealed) {
     bg = 'rgba(20,30,50,0.8)';
-    borderColor = 'rgba(255,255,255,0.08)';
+    // Proven-safe click: a quiet green edge, the deduction's receipt
+    borderColor = tile.proven ? 'rgba(61,214,95,0.45)' : 'rgba(255,255,255,0.08)';
   } else if (isEmpty) {
     bg = 'rgba(30,30,30,0.6)';
-    borderColor = 'rgba(255,255,255,0.04)';
+    borderColor = tile.proven ? 'rgba(61,214,95,0.35)' : 'rgba(255,255,255,0.04)';
   } else if (isGhostReveal && tile.type === 'bomb') {
     bg = 'rgba(180,30,30,0.15)';
     borderColor = 'rgba(200,50,50,0.4)';
@@ -177,6 +202,8 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
     bg = 'rgba(255,217,61,0.1)';
   } else if (scannerActive && isClickable) {
     borderColor = 'rgba(59,130,246,0.4)';
+  } else if (probeActive && isClickable) {
+    borderColor = 'rgba(192,132,252,0.5)';
   } else if (flagModeActive && isClickable) {
     borderColor = 'rgba(250,204,21,0.4)';
   }
@@ -193,13 +220,13 @@ function GridTile({ tile, adjacentBombs, ghostAdjacentBombs, isAnimating, scanne
         animationDelay: entranceDelay,
         background: bg,
         borderColor,
-        cursor: isClickable ? (scannerActive ? 'crosshair' : flagModeActive ? 'cell' : 'pointer') : 'default',
+        cursor: isClickable ? (scannerActive || probeActive ? 'crosshair' : flagModeActive ? 'cell' : 'pointer') : 'default',
       }}
       className={[
         'aspect-square rounded-xl border-2 flex items-center justify-center relative',
         'transition-[border-color,background] duration-100',
         'tile-entrance',
-        isClickable && !scannerActive
+        isClickable && !scannerActive && !probeActive
           ? 'hover:scale-110 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/40 transition-transform duration-100'
           : '',
         isAnimating ? 'tile-reveal' : '',
@@ -290,7 +317,7 @@ function TileContent({
         <span className={`text-2xl sm:text-3xl leading-none ${isAnimating ? 'icon-pop' : ''}`}>
           {def.emoji}
         </span>
-        {/* Sixth Sense relic: adjacent bomb count, same as an empty tile's number */}
+        {/* Adjacent bomb count — every revealed safe tile shows one (Blackout hides these) */}
         {adjacentBombs > 0 && (
           <span
             className="absolute bottom-0.5 right-1 font-mono font-bold text-xs leading-none"

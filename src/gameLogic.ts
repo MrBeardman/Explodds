@@ -12,7 +12,12 @@ import {
   PACK_PICK_COUNT, HUGE_PACK_PICK_COUNT,
   RELIC_CASE_BASE_PRICE, RELIC_CASE_PRICE_STEP, MAX_BONUS_RELIC_SLOTS,
   MAX_ACTIVE_RELICS, BET_STEP, CASCADE_LEVEL1_CAP,
+  DEADLINE_WALLET_CHASE, COLLATERAL_DEPOSIT_FRAC, COLLATERAL_BOMB_RELIEF,
+  PROFITABLE_EARNINGS_RATIO, TICKETS_FLAWLESS, FLAWLESS_MIN_PROVEN,
+  DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, ECHO_REVEALED_EMPTIES, CURFEW_CLICKS,
+  MULT_GAIN_BASE, MULT_GAIN_PER_BOMB, STREAK_5_MULT, STREAK_10_MULT, STREAK_15_CASH,
 } from './constants';
+import { analyzeBoard, neighbors8, trueNumber } from './deduction';
 import type {
   GameState, Tile, TileType, TileState, SymbolId,
   EventCardId, BossId, ComboDisplay, BoostAxis, SymbolBoost,
@@ -104,6 +109,7 @@ export function generateBoard(state: GameState): Tile[] {
     symbol: null,
     consumable: null,
     combo_highlight: false,
+    proven: false,
   }));
 
   // Assign types: shuffled[i] gets types[i]
@@ -143,6 +149,13 @@ export function generateBoard(state: GameState): Tile[] {
       const pick = empties[Math.floor(rng() * empties.length)];
       tiles[pick.index].state = 'empty_revealed';
     }
+  }
+
+  // Echo relic: after a bust, the next board starts with a couple of numbers
+  // already on it — a deduction foothold instead of a cold restart
+  if (state.relics.includes('echo') && state.last_attempt_busted) {
+    const empties = tiles.filter(t => t.type === 'empty' && t.state === 'hidden');
+    rngShuffle(rng, empties).slice(0, ECHO_REVEALED_EMPTIES).forEach(t => { tiles[t.index].state = 'empty_revealed'; });
   }
 
   // Bomb Detector consumable: flag 2 bombs with ⚠
@@ -267,7 +280,7 @@ function isBoardFullyCleared(board: Tile[]): boolean {
 // level 2 passes Infinity (today's unlimited behavior). Level 0 never calls
 // this at all (handleTileClick reveals just the origin tile instead).
 
-function floodFillReveal(board: Tile[], origin: number, maxTiles: number = Infinity): number[] {
+function floodFillReveal(state: GameState, board: Tile[], origin: number, maxTiles: number = Infinity): number[] {
   const visited = new Set<number>([origin]);
   const queue = [origin];
   const revealed: number[] = [];
@@ -277,7 +290,8 @@ function floodFillReveal(board: Tile[], origin: number, maxTiles: number = Infin
     revealed.push(idx);
     const t = board[idx];
 
-    if (t.type === 'empty' && adjacentBombCount(board, idx) === 0) {
+    // A shown 0 (over the number-neighborhood in force) expands
+    if (t.type === 'empty' && trueNumber(state, board, idx) === 0) {
       const row = Math.floor(idx / GRID_COLS);
       const col = idx % GRID_COLS;
       for (let dr = -1; dr <= 1; dr++) {
@@ -332,7 +346,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
 
   const bananaEarnings = symbol === 'banana' ? [...acc.bananaEarnings, cash] : acc.bananaEarnings;
 
-  const baseGain = 0.08 + acc.bombsThisAttempt * 0.01;
+  const baseGain = MULT_GAIN_BASE + acc.bombsThisAttempt * MULT_GAIN_PER_BOMB;
   const multGain = state.relics.includes('adrenaline_core') ? baseGain * 1.2 : baseGain;
   let mult = parseFloat((acc.mult + multGain).toFixed(3));
 
@@ -342,15 +356,15 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
 
   if (streak >= 5 && !s5) {
     if (state.relics.includes('hot_hands')) streakBonus += 8;
-    else mult = parseFloat((mult + 0.2).toFixed(3));
+    else mult = parseFloat((mult + STREAK_5_MULT).toFixed(3));
     s5 = true;
   }
   if (streak >= 10 && !s10) {
-    mult = parseFloat((mult + 0.5).toFixed(3));
+    mult = parseFloat((mult + STREAK_10_MULT).toFixed(3));
     s10 = true;
   }
   if (streak >= 15 && !s15) {
-    streakBonus += 5;
+    streakBonus += STREAK_15_CASH;
     s15 = true;
   }
 
@@ -485,15 +499,15 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   if (bellStormStreak !== null) {
     if (bellStormStreak >= 5 && !s5) {
       if (state.relics.includes('hot_hands')) newEarnings += 8;
-      else newMult = parseFloat((newMult + 0.2).toFixed(3));
+      else newMult = parseFloat((newMult + STREAK_5_MULT).toFixed(3));
       s5 = true;
     }
     if (bellStormStreak >= 10 && !s10) {
-      newMult = parseFloat((newMult + 0.5).toFixed(3));
+      newMult = parseFloat((newMult + STREAK_10_MULT).toFixed(3));
       s10 = true;
     }
     if (bellStormStreak >= 15 && !s15) {
-      newEarnings += 5;
+      newEarnings += STREAK_15_CASH;
       s15 = true;
     }
   }
@@ -524,7 +538,73 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   };
 }
 
+// ─── Bomb relocation (openings, Bombproof Boots, Gut Feeling) ────────────────
+//
+// Swaps any bomb inside `protect` with a random still-hidden safe tile outside
+// it, so the protected tiles are safe WITHOUT changing the bomb count — the
+// 💣 counter and every number stay honest. Falls back to plain conversion
+// (bomb → empty, count −1) only if no swap target exists.
+
+function relocateBombs(state: GameState, board: Tile[], protect: number[]): number {
+  const attemptKey = (3 - state.attempts_remaining) + 1;
+  const rng = mulberry32(state.seed + state.cycle_number * 1000 + attemptKey * 100 + 7 + protect[0]);
+  const protectSet = new Set(protect);
+  let removed = 0;
+  for (const idx of protect) {
+    if (board[idx].type !== 'bomb') continue;
+    const candidates = board.filter(t =>
+      !protectSet.has(t.index) && t.type !== 'bomb' && t.state === 'hidden' && t.consumable === null,
+    );
+    if (candidates.length === 0) {
+      board[idx].type = 'empty';
+      board[idx].symbol = null;
+      removed++;
+      continue;
+    }
+    const target = candidates[Math.floor(rng() * candidates.length)];
+    const { type, symbol } = board[target.index];
+    board[target.index].type = 'bomb';
+    board[target.index].symbol = null;
+    board[idx].type = type;
+    board[idx].symbol = symbol;
+  }
+  return removed;
+}
+
+// Which tiles the opening click guarantees bomb-free, by Cascade Sense level:
+// 0 → just the clicked tile; 1 and 2 → a plus (clicked + 4 orthogonal
+// neighbours). Deliberately NOT a full 3×3: on a 5×5 that's 36% of the board
+// handed over for free, and the bot playtest showed a perfect deducer then
+// proves nearly everything regardless of bomb count — the skill layer needs
+// tiles that must be reasoned for. Level 2 instead removes the cascade cap.
+export function openingTiles(index: number, cascadeLevel: number): number[] {
+  if (cascadeLevel <= 0) return [index];
+  const row = Math.floor(index / GRID_COLS), col = index % GRID_COLS;
+  return [index, ...neighbors8(index).filter(j => Math.floor(j / GRID_COLS) === row || j % GRID_COLS === col)];
+}
+
+// ─── Probe consumable ─────────────────────────────────────────────────────────
+
+function applyProbe(state: GameState, tileIndex: number): GameState {
+  const tile = state.board[tileIndex];
+  if (!tile || (tile.state !== 'hidden' && tile.state !== 'hinted' && tile.state !== 'flagged')) return state;
+  const newBoard = state.board.map(t => t.index === tileIndex
+    ? { ...t, state: (t.type === 'bomb' ? 'flagged' : 'hinted') as TileState }
+    : t);
+  return {
+    ...state,
+    board: newBoard,
+    pending_probe: false,
+    consumables_owned: removeOne(state.consumables_owned, 'probe'),
+  };
+}
+
 // ─── Tile click handler ───────────────────────────────────────────────────────
+//
+// Every deliberate click is tagged PROVEN (the visible numbers made this tile
+// certainly safe — see src/deduction.ts) or a GUESS. Proven clicks build the
+// deduction streak and add to the multiplier; a guess resets both streaks.
+// The opening click (and Bombproof Boots' second) is "free": neither.
 
 export function handleTileClick(state: GameState, tileIndex: number): GameState {
   if (state.phase !== 'CLEARING') return state;
@@ -532,15 +612,41 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
   // Bomb Sense flag mode — clicking a tile marks/unmarks a guess instead of revealing it
   if (state.flag_mode) return toggleFlag(state, tileIndex);
 
-  const tile = state.board[tileIndex];
-  if (tile.state === 'revealed' || tile.state === 'bomb_hit' || tile.state === 'empty_revealed') return state;
+  const clicked = state.board[tileIndex];
+  if (!clicked || clicked.state === 'revealed' || clicked.state === 'bomb_hit' || clicked.state === 'empty_revealed') return state;
 
-  // Scanner mode
-  if (state.pending_scanner_axis !== null) {
-    return applyScanner(state, tileIndex);
-  }
+  if (state.pending_scanner_axis !== null) return applyScanner(state, tileIndex);
+  if (state.pending_probe) return applyProbe(state, tileIndex);
 
   const newBoard = state.board.map(t => ({ ...t }));
+  let bombsThisAttempt = state.bombs_this_attempt;
+
+  // ── Opening ───────────────────────────────────────────────────────────────
+  // The first click of every attempt can never be a bomb (Bombproof Boots: the
+  // first two). Cascade Sense widens the opening: level 1 clears the whole 3×3
+  // around the first click so it always shows a 0 (eight provable tiles);
+  // level 2 also auto-opens the region from there.
+  const guaranteedSafeClicks = state.relics.includes('bombproof_boots') ? 2 : 1;
+  const isOpening = state.clicks_this_attempt === 0;
+  const free = state.clicks_this_attempt < guaranteedSafeClicks;
+  if (free) {
+    const protect = isOpening ? openingTiles(tileIndex, state.skills.cascade) : [tileIndex];
+    bombsThisAttempt -= relocateBombs(state, newBoard, protect);
+  }
+
+  // ── Proven vs. guess ──────────────────────────────────────────────────────
+  let proven = false;
+  let gutUsed = state.gut_feeling_used;
+  if (!free) {
+    proven = analyzeBoard(state, state.board).safe.has(tileIndex);
+    // Gut Feeling relic: once per cycle, a guess that would bust is spared
+    if (!proven && newBoard[tileIndex].type === 'bomb' && state.relics.includes('gut_feeling') && !gutUsed) {
+      bombsThisAttempt -= relocateBombs(state, newBoard, [tileIndex]);
+      gutUsed = true;
+    }
+  }
+  const guess = !free && !proven;
+  const tile = newBoard[tileIndex];
 
   // ── Bomb ──────────────────────────────────────────────────────────────────
 
@@ -549,17 +655,15 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     if (tile.consumable === 'defuser') {
       newBoard[tileIndex].state = 'empty_revealed';
       newBoard[tileIndex].type = 'empty';
-      return { ...state, board: newBoard, clicks_this_attempt: state.clicks_this_attempt + 1 };
-    }
-
-    // Baseline fairness rule: the first click of every attempt can never be a
-    // bomb — no instant, information-free death before a single decision.
-    // Bombproof Boots relic extends this protection to the first TWO clicks.
-    const guaranteedSafeClicks = state.relics.includes('bombproof_boots') ? 2 : 1;
-    if (state.clicks_this_attempt < guaranteedSafeClicks) {
-      newBoard[tileIndex].state = 'empty_revealed';
-      newBoard[tileIndex].type = 'empty';
-      return { ...state, board: newBoard, clicks_this_attempt: state.clicks_this_attempt + 1 };
+      return {
+        ...state,
+        board: newBoard,
+        bombs_this_attempt: bombsThisAttempt - 1,
+        clicks_this_attempt: state.clicks_this_attempt + 1,
+        guess_clicks: state.guess_clicks + (guess ? 1 : 0),
+        deduction_streak: guess ? 0 : state.deduction_streak,
+        gut_feeling_used: gutUsed,
+      };
     }
 
     // Bust refunds — best single protection applies:
@@ -593,6 +697,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     return {
       ...state,
       board: newBoard,
+      bombs_this_attempt: bombsThisAttempt,
       phase: 'BUST_FLASH',
       wallet: newWallet,
       tickets: state.tickets + TICKETS_COMPLETE_ATTEMPT,
@@ -613,77 +718,83 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       active_combo_display: [],
       player_flags: [],
       flag_mode: false,
+      deduction_streak: 0,
+      proven_clicks: 0,
+      guess_clicks: 0,
+      last_attempt_busted: true,
+      pending_probe: false,
     };
   }
 
-  // ── Empty tile ────────────────────────────────────────────────────────────
+  // ── Safe tile ─────────────────────────────────────────────────────────────
   // A 0-adjacency empty tile cascades open every connected safe tile (classic
-  // minesweeper flood fill) — one click, but potentially several symbol tiles
-  // revealed and paid out along the way. The whole cascade is one atomic
-  // player action, so the streak resets once (it's an empty click, same as
-  // ever) rather than resetting again for each intermediate empty in the chain.
+  // minesweeper flood fill, capped at level 1, unlimited at level 2 of Cascade
+  // Sense, none at level 0). The whole cascade is one atomic player action.
 
+  let revealSet: number[];
   if (tile.type === 'empty') {
-    const cascadeLevel = state.skills.cascade;
-    const revealSet = cascadeLevel === 0
+    const level = state.skills.cascade;
+    revealSet = level === 0
       ? [tileIndex]
-      : floodFillReveal(newBoard, tileIndex, cascadeLevel === 1 ? CASCADE_LEVEL1_CAP : Infinity);
-    const symbolIdxs: number[] = [];
-    for (const idx of revealSet) {
-      if (newBoard[idx].type === 'empty') newBoard[idx].state = 'empty_revealed';
-      else if (newBoard[idx].type === 'symbol') symbolIdxs.push(idx);
-    }
-
-    let acc: RevealAccum = {
-      earnings: state.attempt_earnings,
-      mult: state.multiplier,
-      streak: 0,
-      s5: false,
-      s10: false,
-      s15: false,
-      tilesCleared: state.tiles_cleared,
-      magnetClears: state.magnet_clears,
-      bombsThisAttempt: state.bombs_this_attempt,
-      bananaEarnings: state.banana_tile_earnings,
-    };
-
-    for (const idx of symbolIdxs) {
-      acc = applySymbolTileReveal(state, newBoard, idx, acc);
-    }
-
-    const finalized = resolveCombosAndFinalize(state, newBoard, acc, state.tickets);
-
-    return {
-      ...state,
-      ...finalized,
-      clicks_this_attempt: state.clicks_this_attempt + 1,
-    } as GameState;
+      : floodFillReveal(state, newBoard, tileIndex, level === 1 ? CASCADE_LEVEL1_CAP : Infinity);
+  } else {
+    revealSet = [tileIndex];
   }
 
-  // ── Symbol tile ───────────────────────────────────────────────────────────
-  // No cascade possible from a symbol tile — same single-tile path as before,
-  // just routed through the shared reveal/combo helpers.
+  const symbolIdxs: number[] = [];
+  for (const idx of revealSet) {
+    if (newBoard[idx].type === 'empty') newBoard[idx].state = 'empty_revealed';
+    else if (newBoard[idx].type === 'symbol') symbolIdxs.push(idx);
+  }
 
-  const acc: RevealAccum = applySymbolTileReveal(state, newBoard, tileIndex, {
+  // Streak: a GUESS resets the symbol streak (and its milestone flags). An
+  // empty tile no longer does — the tiles carrying the numbers are the
+  // information layer, not a punishment.
+  let acc: RevealAccum = {
     earnings: state.attempt_earnings,
     mult: state.multiplier,
-    streak: state.streak,
-    s5: state.streak_5_given,
-    s10: state.streak_10_given,
-    s15: state.streak_15_given,
+    streak: guess ? 0 : state.streak,
+    s5: guess ? false : state.streak_5_given,
+    s10: guess ? false : state.streak_10_given,
+    s15: guess ? false : state.streak_15_given,
     tilesCleared: state.tiles_cleared,
     magnetClears: state.magnet_clears,
-    bombsThisAttempt: state.bombs_this_attempt,
+    bombsThisAttempt,
     bananaEarnings: state.banana_tile_earnings,
-  });
+  };
+
+  // Proven click: the deduction gain lands on the multiplier first, so this
+  // click's own tiles already pay at the higher rate.
+  if (proven) {
+    const gain = state.relics.includes('logician') ? LOGICIAN_MULT_GAIN : DEDUCTION_MULT_GAIN;
+    acc = { ...acc, mult: parseFloat((acc.mult + gain).toFixed(3)) };
+  }
+
+  for (const idx of symbolIdxs) {
+    // Saboteur can arm a bomb on a tile still queued in this cascade — never pay it out
+    if (newBoard[idx].type !== 'symbol' || newBoard[idx].symbol === null) continue;
+    acc = applySymbolTileReveal(state, newBoard, idx, acc);
+  }
+  if (proven) newBoard[tileIndex].proven = true;
 
   const finalized = resolveCombosAndFinalize(state, newBoard, acc, state.tickets);
 
-  return {
+  const next: GameState = {
     ...state,
     ...finalized,
     clicks_this_attempt: state.clicks_this_attempt + 1,
+    deduction_streak: proven ? state.deduction_streak + 1 : (free ? state.deduction_streak : 0),
+    proven_clicks: state.proven_clicks + (proven ? 1 : 0),
+    guess_clicks: state.guess_clicks + (guess ? 1 : 0),
+    gut_feeling_used: gutUsed,
   } as GameState;
+
+  // Curfew boss: the attempt ends on its own after N reveals
+  if (state.active_boss === 'curfew' && next.clicks_this_attempt >= CURFEW_CLICKS && next.phase === 'CLEARING') {
+    return handleCashout(next);
+  }
+
+  return next;
 }
 
 export function getSymbolMod(symbol: SymbolId, state: GameState): number {
@@ -869,10 +980,12 @@ export function handleCashout(state: GameState): GameState {
   // Greed Chip relic: +$3 flat
   if (state.relics.includes('greed_chip')) earnings += 3;
 
-  // "Round winnings" is the fully-modified total (all cashout modifiers already
-  // folded in above) rather than itemizing each one separately — keeps the
-  // breakdown readable while still being the true number that hit the wallet.
+  // The stake comes back on every cashout — only a bust loses it. "Round
+  // winnings" is the fully-modified total (all cashout modifiers already
+  // folded in above) rather than itemizing each one separately.
+  const stake = state.current_bet;
   const cashLines: ResultLine[] = [
+    { label: 'Stake returned', amount: stake },
     { label: 'Round winnings', amount: parseFloat(earnings.toFixed(2)) },
   ];
 
@@ -886,7 +999,7 @@ export function handleCashout(state: GameState): GameState {
     cashLines.push({ label: `🚩 Bomb flags (${flagResult.correct} correct)`, amount: flagResult.bonus });
   }
 
-  const newWallet = parseFloat((state.wallet + earnings + interestEarned + flagResult.bonus).toFixed(2));
+  const newWallet = parseFloat((state.wallet + stake + earnings + interestEarned + flagResult.bonus).toFixed(2));
   const newTotalEarned = parseFloat((state.total_earned + earnings + interestEarned + flagResult.bonus).toFixed(2));
   const newInterestEarned = parseFloat((state.interest_earned_this_cycle + interestEarned).toFixed(2));
 
@@ -895,7 +1008,10 @@ export function handleCashout(state: GameState): GameState {
     { label: 'Attempt complete', amount: TICKETS_COMPLETE_ATTEMPT },
     { label: 'Successful cashout', amount: TICKETS_SUCCESSFUL_CASHOUT },
   ];
-  if (earnings > state.current_bet * 1.5) ticketLines.push({ label: 'Profitable clear', amount: TICKETS_PROFITABLE });
+  if (earnings >= state.current_bet * PROFITABLE_EARNINGS_RATIO) ticketLines.push({ label: 'Profitable clear', amount: TICKETS_PROFITABLE });
+  if (state.guess_clicks === 0 && state.proven_clicks >= FLAWLESS_MIN_PROVEN) {
+    ticketLines.push({ label: `🧠 Flawless (${state.proven_clicks} proven, 0 guesses)`, amount: TICKETS_FLAWLESS });
+  }
   if (state.relics.includes('ticket_printer')) ticketLines.push({ label: 'Ticket Printer', amount: 2 });
   const ticketBonus = ticketLines.reduce((s, l) => s + l.amount, 0);
   const newTickets = state.tickets + ticketBonus;
@@ -928,6 +1044,11 @@ export function handleCashout(state: GameState): GameState {
     active_combo_display: [],
     player_flags: [],
     flag_mode: false,
+    deduction_streak: 0,
+    proven_clicks: 0,
+    guess_clicks: 0,
+    last_attempt_busted: false,
+    pending_probe: false,
     consumables_placed: [],
     pending_scanner_axis: null,
     board: [],
@@ -1018,6 +1139,10 @@ export function effectiveBombs(state: GameState, bet: number, wallet: number): n
   if (state.relics.includes('high_roller') && bet >= wallet * 0.5) {
     bombs = Math.max(1, bombs - 2);
   }
+  // Collateral: half the deadline already deposited → the house relaxes a little
+  if (state.deposited >= state.deadline * COLLATERAL_DEPOSIT_FRAC) {
+    bombs = Math.max(1, bombs - COLLATERAL_BOMB_RELIEF);
+  }
   return bombs;
 }
 
@@ -1073,6 +1198,10 @@ export function handlePlaceBet(state: GameState): GameState {
     active_combo_display: [],
     player_flags: [],
     flag_mode: false,
+    deduction_streak: 0,
+    proven_clicks: 0,
+    guess_clicks: 0,
+    pending_probe: false,
     consumables_placed: [],
     pending_scanner_axis: null,
     lucky_board_used: state.active_events.includes('lucky_board') ? true : state.lucky_board_used,
@@ -1155,8 +1284,10 @@ export function startNextCycle(state: GameState): GameState {
   const nextCycle = state.cycle_number + 1;
   const boss = getBossForCycle(state.seed, nextCycle);
 
+  // The house notices: the deadline never sits below a fixed share of the
+  // bankroll you leave the shop with (backstop against runaway compounding).
+  let nextDeadline = Math.max(calcDeadline(nextCycle), Math.round((state.wallet * DEADLINE_WALLET_CHASE) / 10) * 10);
   // Inflator boss: deadline +25%
-  let nextDeadline = calcDeadline(nextCycle);
   if (boss === 'inflator') nextDeadline = Math.round((nextDeadline * 1.25) / 10) * 10;
 
   const eventOptions = boss === null ? drawEventCards(state, nextCycle) : [];
@@ -1195,6 +1326,11 @@ export function startNextCycle(state: GameState): GameState {
     active_combo_display: [],
     player_flags: [],
     flag_mode: false,
+    deduction_streak: 0,
+    proven_clicks: 0,
+    guess_clicks: 0,
+    gut_feeling_used: false,
+    pending_probe: false,
     consumables_placed: [],
     placement_queue: [],
     placing_index: -1,
@@ -1245,6 +1381,12 @@ export function createInitialState(): GameState {
     active_combo_display: [],
     player_flags: [],
     flag_mode: false,
+    deduction_streak: 0,
+    proven_clicks: 0,
+    guess_clicks: 0,
+    gut_feeling_used: false,
+    last_attempt_busted: false,
+    pending_probe: false,
     combo_id_counter: 1,
     active_events: [],
     active_boss: null,
