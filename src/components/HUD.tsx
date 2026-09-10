@@ -151,10 +151,12 @@ export function HUD({ state }: Props) {
         <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ACTIVE RULES</div>
         <div className="flex flex-col gap-1">
           {activeRules(state).map(r => (
-            <div key={r.key} className="flex items-center gap-1.5 font-mono text-xs" title={r.title}>
-              <span className="text-sm leading-none w-4 text-center">{r.icon}</span>
-              <span className="truncate" style={{ color: 'var(--text-primary)' }}>{r.name}</span>
-              <span className="ml-auto text-right shrink-0" style={{ color: TONE[r.tone ?? 'info'] }}>{r.value}</span>
+            <div key={r.key} className="flex items-start gap-1.5 font-mono text-xs leading-snug" title={r.title}>
+              <span className="text-sm leading-none w-4 text-center mt-0.5">{r.icon}</span>
+              <div className="min-w-0 flex-1">
+                <div style={{ color: 'var(--text-primary)' }}>{r.name}</div>
+                <div className="text-[11px]" style={{ color: TONE[r.tone ?? 'info'] }}>{r.value}</div>
+              </div>
             </div>
           ))}
         </div>
