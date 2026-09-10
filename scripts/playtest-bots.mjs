@@ -117,15 +117,17 @@ function chooseClick(state, player, rng, { alpha, skill }) {
   return { action: 'click', idx: best, kind: 'guess', risk: bestP };
 }
 
-export function playRun({ player = 'solver', seed = 1, cascade = 1, relics = [], betFrac = 0, alpha = 2.0, skill = 1, depositEarly = false, maxCycles = 40, trace = null } = {}) {
+export function playRun({ player = 'solver', seed = 1, cascade = 1, insight = 0, relics = [], betFrac = 0, alpha = 2.0, skill = 1, depositEarly = false, maxCycles = 40, trace = null } = {}) {
   const rng = mulberry32(seed * 7919 + 13);
   let s = GL.createInitialState();
-  s = { ...s, seed, skills: { cascade, bomb_flag: 0 }, relics: [...relics] };
+  s = { ...s, seed, skills: { cascade, bomb_flag: 0, insight }, relics: [...relics] };
   s = { ...s, phase: 'EVENT_CARD', event_card_options: GL.drawEventCards(s) };
   const st = { clicks: 0, proven: 0, guess: 0, attempts: 0, busts: 0, byCycle: {} };
   const cyc = () => (st.byCycle[s.cycle_number] ??= { attempts: 0, busts: 0, proven: 0, clicks: 0, earn: 0, bet: 0 });
   let guard = 0;
+  let stalls = 0;
   while (s.phase !== 'GAME_OVER' && guard++ < 200000 && s.cycle_number <= maxCycles) {
+    const before = s;
     switch (s.phase) {
       case 'EVENT_CARD':
         s = GL.selectEventCard(s, s.event_card_options[0]);
@@ -140,8 +142,11 @@ export function playRun({ player = 'solver', seed = 1, cascade = 1, relics = [],
           const dep = Math.min(want, Math.max(0, s.wallet - plannedBet));
           if (dep > 0) { s = GL.handleDeposit(s, dep); if (s.phase !== 'BET') break; }
         }
-        let bet = Math.max(minBet, Math.round((s.wallet * betFrac) / 5) * 5);
-        bet = GL.clampBetToWallet(bet, s.wallet, minBet);
+        // pick the largest bet option not above the desired fraction (bets snap to bomb bands)
+        const opts = GL.betOptions(s);
+        const want = Math.max(minBet, s.wallet * betFrac);
+        let bet = opts.length ? opts[0].bet : minBet;
+        for (const o of opts) if (o.bet <= want) bet = o.bet;
         if (bet > s.wallet) {
           s = GL.handleDeposit(s, s.wallet);
           if (s.phase === 'BET') s = GL.resolveCycleFailure(s);
@@ -174,18 +179,22 @@ export function playRun({ player = 'solver', seed = 1, cascade = 1, relics = [],
       default: throw new Error('unexpected phase ' + s.phase);
     }
     if (!Number.isFinite(s.wallet)) throw new Error(`wallet became ${s.wallet} at cycle ${s.cycle_number} (boss ${s.active_boss})`);
+    // A reducer no-op means the bot asked for something illegal — surface it instead of spinning
+    if (s === before) { if (++stalls > 50) throw new Error(`stalled in ${s.phase} (seed ${seed}, cycle ${s.cycle_number}, wallet ${s.wallet}, bet ${s.current_bet}, attempts ${s.attempts_remaining}, clicks ${s.clicks_this_attempt})`); } else stalls = 0;
   }
   return { cycles: s.cycles_survived, stats: st, capped: s.cycle_number > maxCycles };
 }
 
 const pct = x => (x * 100).toFixed(0) + '%';
-function summarize(label, cfg, runs = 300) {
+function summarize(label, cfg, runs = 200) {
+  // 200 runs × 30-cycle cap keeps full-information profiles (Insight 3 / Sixth Sense on 7×7
+  // boards, where analyzeBoard's subset rule is O(n²)) to well under a minute each
   const cyc = []; let crashed = 0, capped = 0;
   const agg = { clicks: 0, proven: 0, guess: 0, attempts: 0, busts: 0 };
   const byCycle = {};
   for (let i = 0; i < runs; i++) {
     let r;
-    try { r = playRun({ ...cfg, seed: 1000 + i }); } catch (e) { crashed++; if (crashed === 1) console.error('  !', e.message); continue; }
+    try { r = playRun({ maxCycles: 30, ...cfg, seed: 1000 + i }); } catch (e) { crashed++; if (crashed === 1) console.error('  !', e.message); continue; }
     cyc.push(r.cycles); if (r.capped) capped++;
     for (const k of Object.keys(agg)) agg[k] += r.stats[k];
     for (const [c, v] of Object.entries(r.stats.byCycle)) {
@@ -202,12 +211,15 @@ function summarize(label, cfg, runs = 300) {
 
 const mode = process.argv[2] ?? 'profiles';
 if (mode === 'profiles') {
-  console.log('=== Explodds bot playtest — 300 runs per profile, Cascade Sense 1 unless noted ===');
+  console.log('=== Explodds bot playtest — 200 runs per profile (30-cycle cap), Cascade Sense 1, Insight 0 unless noted ===');
   summarize('random clicker, min bet', { player: 'random' });
   summarize('solver skill 0.5, min bet', { player: 'solver', skill: 0.5 });
   summarize('solver skill 0.75, min bet', { player: 'solver', skill: 0.75 });
   summarize('solver skill 0.75, bet 20%', { player: 'solver', skill: 0.75, betFrac: 0.2 });
   summarize('solver, min bet', { player: 'solver' });
+  summarize('solver, insight 1 (3 numbers)', { player: 'solver', insight: 1 });
+  summarize('solver, insight 3 (all numbers)', { player: 'solver', insight: 3 });
+  summarize('solver + Sixth Sense, min bet', { player: 'solver', relics: ['sixth_sense'] });
   summarize('solver, cascade 0, min bet', { player: 'solver', cascade: 0 });
   summarize('solver, cascade 2, min bet', { player: 'solver', cascade: 2 });
   summarize('solver, bet 30%', { player: 'solver', betFrac: 0.3 });
@@ -239,7 +251,7 @@ if (mode === 'density') {
     for (let i = 0; i < A; i++) {
       const rng = mulberry32(i * 31 + bombs);
       let s = GL.createInitialState();
-      s = { ...s, seed: 5000 + i, skills: { cascade, bomb_flag: 0 }, cycle_number: 3, deadline: 190, phase: 'BET', current_bet: 16, wallet: 150, debug_bomb_override: bombs };
+      s = { ...s, seed: 5000 + i, skills: { cascade, bomb_flag: 0, insight: 3 }, cycle_number: 3, deadline: 190, phase: 'BET', current_bet: 16, wallet: 150, debug_bomb_override: bombs };
       s = GL.handlePlaceBet(s);
       for (let g = 0; g < 40; g++) {
         const ch = chooseClick(s, 'solver', rng, { alpha: 1.2, skill: 1 });

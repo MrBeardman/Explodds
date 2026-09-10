@@ -2,15 +2,14 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import type { GameState, ConsumableId, RelicId, EventCardId, SymbolBoost } from '../types';
 import {
   createInitialState, handleTileClick, handleCashout, handlePlaceBet,
-  handleBustFlashEnd, getMinBet, getLockedBet, getConsumablePrice,
+  handleBustFlashEnd, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
   maxPlayerFlags,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo, betOptions, snapBet,
   resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from '../gameLogic';
 import { calcTileBaseCash, ALL_CONSUMABLES } from '../constants';
-import { BET_STEP } from '../constants';
 import { playSfx, isMuted, setMuted } from '../sound';
 import { recordRunEnd, type DailyRecord } from '../meta';
 
@@ -89,10 +88,7 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'SET_BET': {
       if (getLockedBet(state) !== null) return state; // Warden: bet is locked
-      const minBet = getMinBet(state);
-      const clamped = Math.max(minBet, Math.min(action.amount, state.wallet));
-      const snapped = Math.round(clamped / BET_STEP) * BET_STEP;
-      return { ...state, current_bet: Math.max(minBet, snapped) };
+      return { ...state, current_bet: snapBet(state, action.amount) };
     }
 
     case 'PLACE_BET':
@@ -560,18 +556,20 @@ interface LeftPanelProps {
 }
 
 function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: LeftPanelProps) {
-  const minBet = getMinBet(state);
   const lockedBet = getLockedBet(state);
   const displayBet = lockedBet ?? state.current_bet;
-  const maxBet = Math.max(minBet, Math.floor(state.wallet / BET_STEP) * BET_STEP);
+  const options = isBetting ? betOptions(state) : [];
   const previewBombs = state.debug_bomb_override ?? effectiveBombs(state, displayBet, state.wallet);
   const previewTileCash = calcTileBaseCash(displayBet, state.board_cols * state.board_cols)
     * (state.active_events.includes('danger_pay') ? 1.4 : 1);
 
   // Cashout returns the stake plus winnings; it opens up after the free opening click.
   // The stake comes back pro rata until enough of the board is revealed.
-  const canCashout = isClearing && state.clicks_this_attempt >= 2;
-  const stakeInfo = isClearing ? stakeReturnInfo(state) : { fraction: 1, revealed: 0, required: 0 };
+  // Strictly the live phase — isClearing also covers BUST_FLASH, where neither the
+  // cashout button nor the stake hint should render
+  const isLiveClearing = state.phase === 'CLEARING';
+  const canCashout = isLiveClearing && state.clicks_this_attempt >= 2;
+  const stakeInfo = isLiveClearing ? stakeReturnInfo(state) : { fraction: 1, revealed: 0, required: 0 };
   const stakeBack = Math.round(state.current_bet * stakeInfo.fraction);
   // Cashing out now would let a deposit of everything clear the deadline
   const cashoutCoversDebt = state.deposited + state.wallet + state.attempt_earnings >= state.deadline;
@@ -695,18 +693,31 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
         )}
       </div>
 
-      {/* Bet slider — only in BET phase, hidden when Warden locks the bet */}
-      {isBetting && lockedBet === null && (
-        <input
-          type="range"
-          min={minBet}
-          max={maxBet}
-          step={BET_STEP}
-          value={state.current_bet}
-          onChange={e => dispatch({ type: 'SET_BET', amount: Number(e.target.value) })}
-          className="w-full"
-          style={{ accentColor: 'var(--gold)' }}
-        />
+      {/* Bet options — one per bomb count (the biggest bet that still deals that
+          many bombs) plus all-in; hidden when Warden locks the bet */}
+      {isBetting && lockedBet === null && options.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map(o => {
+            const active = o.bet === state.current_bet;
+            return (
+              <button
+                key={o.bet}
+                onClick={() => dispatch({ type: 'SET_BET', amount: o.bet })}
+                className="font-mono text-xs px-2 py-1.5 rounded cursor-pointer flex flex-col items-center leading-tight"
+                title={o.allIn ? 'All-in' : `Largest bet that still deals ${o.bombs} bombs`}
+                style={{
+                  background: active ? 'rgba(200,168,75,0.18)' : 'var(--bg-raised)',
+                  border: `1px solid ${active ? 'var(--gold)' : 'var(--border)'}`,
+                  color: active ? 'var(--gold)' : 'var(--text-primary)',
+                  minWidth: '3.4rem',
+                }}
+              >
+                <span>${o.bet}{o.allIn ? ' ★' : ''}</span>
+                <span style={{ color: 'var(--red)', fontSize: '10px' }}>💣 {o.bombs}</span>
+              </button>
+            );
+          })}
+        </div>
       )}
 
       {/* Board preview / live info */}
@@ -735,11 +746,11 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
       {isBetting && (
         <button
           onClick={() => dispatch({ type: 'PLACE_BET' })}
-          disabled={state.wallet < minBet}
+          disabled={state.wallet <= 0}
           className="w-full font-display text-lg py-3 rounded-xl cursor-pointer transition-all duration-150"
           style={{
-            background: state.wallet >= minBet ? 'var(--gold)' : 'var(--bg-card)',
-            color: state.wallet >= minBet ? '#000' : 'var(--text-dim)',
+            background: state.wallet > 0 ? 'var(--gold)' : 'var(--bg-card)',
+            color: state.wallet > 0 ? '#000' : 'var(--text-dim)',
             letterSpacing: '0.06em',
             border: '1px solid var(--border)',
           }}
@@ -760,7 +771,7 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
       )}
 
       {/* CASHOUT button */}
-      {isClearing && !bustRevealReady && (
+      {isLiveClearing && !bustRevealReady && (
         <button
           onClick={() => dispatch({ type: 'CASHOUT' })}
           disabled={!canCashout}
@@ -784,7 +795,7 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
         </button>
       )}
 
-      {isClearing && stakeInfo.fraction < 1 && (
+      {isLiveClearing && stakeInfo.fraction < 1 && (
         <div className="font-mono text-xs text-center" style={{ color: 'var(--gold)' }} title="The full stake only comes back once enough of the board is revealed — cashing out earlier returns it pro rata">
           reveal {stakeInfo.required - stakeInfo.revealed} more safe tile{stakeInfo.required - stakeInfo.revealed === 1 ? '' : 's'} for the full stake
         </div>

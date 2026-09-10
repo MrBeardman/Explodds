@@ -136,6 +136,24 @@ perfect solver min bet ~5 / 10; 30% bets ~4–6 / 13; + Ledger ~12 / 24;
 one line a perfect deducer can still ride a long way — a human who can't
 clear 88% of boards gets far less from it).
 
+## Fourth pass — second playtest round (2026-09-10)
+
+Findings: numbers on every tile let a first-time player deduce their very first
+board and beat the deadline in one attempt; the bet slider offered many bets
+with identical bomb counts; a $10 wallet against a $12 minimum was stuck on
+PLACE BET; no visible build version.
+
+Changes: **Insight** meta-skill (numbers on symbol tiles are earned: the first
+5 → 8 → 12 → all symbol reveals per attempt; empties always show; Sixth Sense
+relic returns as the in-run version); bet **options** — one per bomb count,
+the largest bet that still deals it, plus all-in — replace the slider; below
+the minimum bet you can go all-in with what's left; version tag (0.1.0).
+
+Bot numbers (median / p90): random 1 / 2; noisy solver 2 / 4; perfect solver
+at Insight 0 4 / 9 (a floor of 0 or 3 numbers gave 1 / 2 — pure luck); Insight
+1 7 / 14; Insight 3 or Sixth Sense 14 / 27; + Ledger 10 / 14. The meta ladder
+is deliberately steep: information is the progression axis now.
+
 ## Still open
 - Compass / Assayer-style relics that change the *shape* of numbers (skipped:
   Compass is a sidegrade, Assayer needs a second number on the tile).

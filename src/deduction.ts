@@ -74,13 +74,16 @@ export function liarTile(state: Pick<GameState, 'active_boss' | 'seed' | 'cycle_
 
 // ─── What the player sees ────────────────────────────────────────────────────
 
-type ShownState = Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining' | 'relics'>;
+type ShownState = Pick<GameState, 'active_boss' | 'seed' | 'cycle_number' | 'attempts_remaining' | 'relics' | 'numbered_symbols'>;
 
-function tileShowsNumber(state: Pick<GameState, 'active_boss' | 'relics'>, tile: Tile): boolean {
+function tileShowsNumber(state: Pick<GameState, 'active_boss' | 'relics' | 'numbered_symbols'>, tile: Tile): boolean {
   if (tile.state === 'empty_revealed') return true;
   if (tile.state === 'revealed' && tile.type === 'symbol') {
-    // Blackout: symbol tiles go dark — only empties keep their numbers
-    return state.active_boss !== 'blackout';
+    // Blackout: symbol tiles go dark — only empties keep their numbers.
+    // Otherwise a symbol tile shows its number only if it earned an Insight
+    // slot when revealed (or Sixth Sense is owned).
+    if (state.active_boss === 'blackout') return false;
+    return state.relics.includes('sixth_sense') || state.numbered_symbols.includes(tile.index);
   }
   // Second Sight relic: known-safe (hinted) tiles show their number unrevealed
   if (tile.state === 'hinted' && tile.type !== 'bomb') return state.relics.includes('second_sight');

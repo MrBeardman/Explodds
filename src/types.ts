@@ -43,6 +43,7 @@ export type RelicId =
   | 'gut_feeling'
   | 'echo'
   | 'second_sight'
+  | 'sixth_sense'
   | 'cartographer'
   | 'double_down'
   | 'loaded_dice'
@@ -92,7 +93,7 @@ export type EventCardId =
 
 // ─── Meta-progression (persists across runs — see src/meta.ts) ───────────────
 
-export type SkillId = 'cascade' | 'bomb_flag';
+export type SkillId = 'cascade' | 'bomb_flag' | 'insight';
 
 // ─── Symbol boosts (packs) ────────────────────────────────────────────────────
 
@@ -229,6 +230,7 @@ export interface GameState {
   flag_mode: boolean;             // toggled via FLAG button — next tile click flags instead of reveals
   deduction_streak: number;       // consecutive PROVEN-safe clicks this attempt (a guess resets it)
   last_reveal_index: number;      // tile index of the last deliberate reveal this attempt (−1 = none); Ledger relic reads its row
+  numbered_symbols: number[];     // symbol tiles that show their bomb count this attempt (Insight skill allowance, in reveal order)
   proven_clicks: number;          // proven-safe clicks this attempt (Flawless ticket bonus)
   guess_clicks: number;           // unproven clicks this attempt
   gut_feeling_used: boolean;      // Gut Feeling relic: first guess each attempt is bomb-proof, once

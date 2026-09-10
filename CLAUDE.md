@@ -34,9 +34,14 @@ new decision this session added — see "Deposit & Interest" below.
 instead a seeded boss rule warps the whole cycle (see Bosses section). The shop
 previews the upcoming boss so players can prep. Beating one pays +8🎫.
 
-**Skill layer (see "Deduction Layer" below — read it before touching clicks):** EVERY
-revealed safe tile (symbol or empty) shows a minesweeper-style number = count of adjacent
-bombs. `src/deduction.ts` is the single source of truth for what number a tile shows and
+**Skill layer (see "Deduction Layer" below — read it before touching clicks):** revealed
+EMPTY tiles always show a minesweeper-style number = count of adjacent bombs; revealed
+SYMBOL tiles show theirs only when the **Insight** meta-skill grants it (level 0: the
+first 5 symbol reveals per attempt; 1: 8; 2: 12; 3: all — `INSIGHT_SLOTS_BY_LEVEL`,
+tracked in `state.numbered_symbols`) or the **Sixth Sense** relic is owned. A
+playtester cleared their very first board with numbers on every tile, so information
+is now something you earn across runs (prestige) and within a run (relics).
+`src/deduction.ts` is the single source of truth for what number a tile shows and
 what the player can PROVE from the visible board; the reducer tags every deliberate click
 as **proven** or a **guess**, proven clicks build a deduction streak that feeds the
 multiplier, a guess resets both streaks. Empty tiles pay nothing but no longer break the
@@ -89,6 +94,7 @@ findings + rationale: `docs/plans/standard-loop-review.md`.
 
 | Layer | Tech |
 |-------|------|
+| Version | `package.json` `version` (semver, 0.1.0 at the first public playtest) → injected as `__APP_VERSION__` by vite.config.ts, shown bottom-right on every screen (`VersionTag` in App.tsx). Bump it whenever a build goes to playtesters |
 | Framework | React 19 + Vite 8 |
 | Language | TypeScript (strict) |
 | Styling | Tailwind CSS v4 + CSS custom properties |
@@ -342,6 +348,13 @@ protects only the clicked tile; levels 1–2 protect the plus shape (clicked + 4
 neighbours). A full 3×3 opening was tried and rejected — on a 5×5 it hands over 36% of
 the board and a perfect deducer then proves everything at any bomb count.
 
+**Third skill: Insight** (`SkillId = 'insight'`, 4 levels) — how many SYMBOL tiles per
+attempt show their bomb count (`INSIGHT_SLOTS_BY_LEVEL = [5, 8, 12, ∞]` — a floor of 0 or
+3 made a perfect deducer die in cycle 1, a coin flip rather than a harder skill game). Granted in
+reveal order inside `applySymbolTileReveal` (the `numbered` accumulator →
+`state.numbered_symbols`, reset every attempt); `displayedNumber` reads that list, so
+the Grid and `analyzeBoard` agree. Sixth Sense (relic) bypasses it; Blackout overrides both.
+
 **Second skill: Bomb Sense** (`SkillId = 'bomb_flag'`, 5 levels) lets the player
 flag suspected bomb tiles during CLEARING for a bonus when the attempt ends:
 - **Level 0 (new-player default)** — cannot flag at all (`maxPlayerFlags` returns 0,
@@ -403,6 +416,14 @@ Inflator boss: deadline × 1.25 (applied in startNextCycle, after the chase)
 // Min bet — RISES EVERY CYCLE, not flat
 minBet = MIN_BET_BASE(10) + cycle_number × MIN_BET_PER_CYCLE(2)
 Greed Mode event: max(minBet, GREED_MODE_MIN_BET=25)
+Below the minimum you may still go ALL-IN: getMinBet returns the wallet itself when
+0 < wallet < minBet (a player with $10 and a $12 minimum used to be stuck on PLACE BET).
+
+// Bet OPTIONS, not a slider (betOptions / snapBet in gameLogic.ts)
+One option per reachable bomb count = the LARGEST bet (multiple of BET_STEP) that still
+deals that many bombs, plus all-in (★, may be off-step). SET_BET snaps any amount onto
+the nearest option; toBetPhase re-snaps current_bet for the new wallet. Rationale: bombs
+step in wallet bands, so every bet inside a band carries the band's top risk anyway.
 
 // Board growth (BOARD_GROWTH / calcBoardCols) — the second difficulty axis
 cycles 1-5: 5×5 | 6-9: 6×6 | 10+: 7×7      (state.board_cols; board.length === cols²)
@@ -628,6 +649,7 @@ bonus disabled for playtesting) — listed below for reference but not in the sh
 | gut_feeling | Once per cycle, a guess that would bust ends the attempt as a cashout for HALF the winnings (stake kept) | 16🎫 | legendary |
 | echo | After a bust, the next board starts with 2 empties already revealed | 10🎫 | common |
 | second_sight *(unlock)* | Hinted (known-safe) tiles show their number before being revealed (`displayedNumber`) | 12🎫 | rare |
+| sixth_sense | Every revealed symbol tile shows its bomb count, whatever your Insight level | 14🎫 | rare |
 | cartographer *(unlock)* | Every board starts with 2 empties already revealed (Echo, always on) | 18🎫 | legendary |
 | double_down *(unlock)* | Bets ≥ half the pre-bet wallet pay ×1.3 winnings (handleCashout) | 12🎫 | rare |
 | loaded_dice | +1 bomb every board, every tile pays ×1.25 | 8🎫 | common |
@@ -643,8 +665,9 @@ lucky_charm; *Banker* — compound_chip, vault, greed_chip, ticket_printer, hagg
 unlocked across runs — `relicPool(state)` filters by `state.unlocked_relics`, a snapshot
 of `meta.unlocks` taken at `createInitialState()`. See "Unlocks & daily run" below.
 
-`sixth_sense` was retired — numbers on every revealed tile is now the baseline rule
-(it was a 6× run-length multiplier as a single relic). Ledger is deliberately
+`sixth_sense` is BACK (numbers on every symbol tile) now that the baseline is
+empties-only again via the Insight skill — it's the in-run counterpart of Insight 3.
+Ledger is deliberately
 rows-only: rows+columns made most boards fully determined in the bot test. Gut Feeling
 ends the attempt as a forced cashout (half winnings) rather than relocating the bomb — a
 free relocation once per cycle let the perfect-deducer bot run 25+ cycles on that relic
@@ -966,8 +989,10 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
   out, snowball", "11 bombs on 6×6 is too much", "$22 packs against a $1,000 deadline".
   Fixes: stake-return threshold, density cut to ≤22%, price/flat-reward scaling, tile
   cash normalised by board area, multiplier growth halved, 2 attempts from cycle 10,
-  collateral at 75%. Bot targets after it: random ~1–2, noisy deducer 2–3, perfect
-  deducer 5 (min bet) / 4–6 (30% bets), relic builds ~10–15, nobody immortal.
+  collateral at 75%. Second round: Insight skill (numbers on symbol tiles are earned),
+  bet options per bomb count, all-in below the minimum, version tag. Bot targets after
+  it (median cycles): random ~1, noisy deducer 2, perfect deducer at Insight 0 ~4,
+  Insight 1 ~7, Insight 3 / Sixth Sense ~14, + Ledger ~10, nobody immortal.
 
 - **`state.player_flags` (Bomb Sense guesses) is a completely separate concept from
   `Tile.state === 'flagged'`** (Bomb Detector consumable's "this hidden tile IS a

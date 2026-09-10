@@ -17,6 +17,7 @@ import {
   DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, ECHO_REVEALED_EMPTIES, CURFEW_CLICKS,
   MULT_GAIN_BASE, MULT_GAIN_PER_BOMB, STREAK_5_MULT, STREAK_10_MULT, STREAK_15_CASH,
   MAX_TRAITS, LOCKED_RELIC_IDS, STAKE_RETURN_CLEAR_FRAC, shopPriceScale, flatCashScale, attemptsForCycle,
+  INSIGHT_SLOTS_BY_LEVEL,
 } from './constants';
 import { analyzeBoard, neighbors8, trueNumber, boardCols } from './deduction';
 import type {
@@ -209,7 +210,47 @@ export function adjacentBombCount(board: Tile[], index: number): number {
 
 export function getMinBet(state: GameState): number {
   const base = MIN_BET_BASE + state.cycle_number * MIN_BET_PER_CYCLE;
-  return state.active_events.includes('greed_mode') ? Math.max(base, GREED_MODE_MIN_BET) : base;
+  const min = state.active_events.includes('greed_mode') ? Math.max(base, GREED_MODE_MIN_BET) : base;
+  // Below the table minimum you can still go all-in with what's left — a
+  // player with $10 and a $12 minimum was stuck on PLACE BET with no legal move.
+  return state.wallet > 0 && state.wallet < min ? state.wallet : min;
+}
+
+// ─── Bet options ──────────────────────────────────────────────────────────────
+//
+// The bet is a risk dial: bombs step up in bands of the wallet (calcBombs), so
+// any bet inside a band carries the same risk as the band's top. Instead of a
+// slider, offer exactly one bet per bomb count — the LARGEST bet that still
+// deals that many bombs — plus all-in. (Playtest: "no sense betting $12–$35
+// when $40 has the same 4 bombs".)
+export interface BetOption { bet: number; bombs: number; allIn: boolean }
+export function betOptions(state: GameState): BetOption[] {
+  const minBet = getMinBet(state);
+  const wallet = state.wallet;
+  if (wallet <= 0) return [];
+  const locked = getLockedBet(state);
+  if (locked !== null) return [{ bet: locked, bombs: effectiveBombs(state, locked, wallet), allIn: locked >= wallet }];
+  const bestPerBombs = new Map<number, number>();
+  const step = wallet < minBet ? wallet : BET_STEP;
+  for (let bet = Math.ceil(minBet / step) * step; bet <= wallet; bet += step) {
+    const b = effectiveBombs(state, bet, wallet);
+    if ((bestPerBombs.get(b) ?? -1) < bet) bestPerBombs.set(b, bet);
+  }
+  // all-in is always an option, even when it isn't a multiple of the step
+  const allInBombs = effectiveBombs(state, wallet, wallet);
+  if ((bestPerBombs.get(allInBombs) ?? -1) < wallet) bestPerBombs.set(allInBombs, wallet);
+  return [...bestPerBombs.entries()]
+    .map(([bombs, bet]) => ({ bet, bombs, allIn: bet >= wallet }))
+    .sort((a, b) => a.bet - b.bet);
+}
+
+// Snap any requested bet onto the nearest option (used by SET_BET)
+export function snapBet(state: GameState, requested: number): number {
+  const opts = betOptions(state);
+  if (opts.length === 0) return getMinBet(state);
+  let best = opts[0];
+  for (const o of opts) if (Math.abs(o.bet - requested) < Math.abs(best.bet - requested)) best = o;
+  return best.bet;
 }
 
 // Keeps current_bet affordable whenever wallet shrinks outside of SET_BET (e.g.
@@ -219,7 +260,7 @@ export function getMinBet(state: GameState): number {
 export function clampBetToWallet(bet: number, wallet: number, minBet: number): number {
   const capped = Math.min(bet, wallet);
   const flooredToStep = Math.floor(capped / BET_STEP) * BET_STEP;
-  return Math.max(minBet, flooredToStep);
+  return Math.min(wallet, Math.max(minBet, flooredToStep));
 }
 
 // The only true dead-end is an empty wallet with the deadline still unmet —
@@ -227,7 +268,9 @@ export function clampBetToWallet(bet: number, wallet: number, minBet: number): n
 // player can deposit whatever's left toward the deadline instead of betting.
 export function toBetPhase(state: GameState): GameState {
   if (state.wallet <= 0 && state.deposited < state.deadline) return resolveCycleFailure(state);
-  return { ...state, phase: 'BET' };
+  const next: GameState = { ...state, phase: 'BET' };
+  // Keep the selected bet on a legal option for the new wallet
+  return { ...next, current_bet: snapBet(next, next.current_bet) };
 }
 
 // ─── Combo helpers ────────────────────────────────────────────────────────────
@@ -344,12 +387,17 @@ interface RevealAccum {
   magnetClears: number;
   bombsThisAttempt: number;
   bananaEarnings: number[];
+  numbered: number[];   // symbol tiles granted a bomb-count readout (Insight allowance)
 }
 
 function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: number, acc: RevealAccum): RevealAccum {
   const tile = board[tileIndex];
   const symbol = tile.symbol!;
   board[tileIndex].state = 'revealed';
+
+  // Insight: the first N symbol reveals each attempt get their bomb count shown
+  const insightSlots = INSIGHT_SLOTS_BY_LEVEL[Math.min(state.skills.insight ?? 0, INSIGHT_SLOTS_BY_LEVEL.length - 1)];
+  const numbered = acc.numbered.length < insightSlots ? [...acc.numbered, tileIndex] : acc.numbered;
 
   const baseCash = calcTileBaseCash(state.current_bet, state.board_cols * state.board_cols);
   const symbolMod = getSymbolMod(symbol, state);
@@ -415,6 +463,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
     magnetClears,
     bombsThisAttempt,
     bananaEarnings,
+    numbered,
   };
 }
 
@@ -545,6 +594,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
     streak_10_given: s10,
     streak_15_given: s15,
     banana_tile_earnings: acc.bananaEarnings,
+    numbered_symbols: acc.numbered,
     tiles_cleared: acc.tilesCleared,
     magnet_clears: acc.magnetClears,
     tickets: newTickets,
@@ -750,6 +800,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       flag_mode: false,
       deduction_streak: 0,
       last_reveal_index: -1,
+    numbered_symbols: [],
       proven_clicks: 0,
       guess_clicks: 0,
       last_attempt_busted: true,
@@ -792,6 +843,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     magnetClears: state.magnet_clears,
     bombsThisAttempt,
     bananaEarnings: state.banana_tile_earnings,
+    numbered: state.numbered_symbols,
   };
 
   // Proven click: the deduction gain lands on the multiplier first, so this
@@ -1100,6 +1152,7 @@ export function handleCashout(state: GameState): GameState {
     flag_mode: false,
     deduction_streak: 0,
     last_reveal_index: -1,
+    numbered_symbols: [],
     proven_clicks: 0,
     guess_clicks: 0,
     last_attempt_busted: false,
@@ -1258,6 +1311,7 @@ export function handlePlaceBet(state: GameState): GameState {
     flag_mode: false,
     deduction_streak: 0,
     last_reveal_index: -1,
+    numbered_symbols: [],
     proven_clicks: 0,
     guess_clicks: 0,
     pending_probe: false,
@@ -1395,6 +1449,7 @@ export function startNextCycle(state: GameState): GameState {
     flag_mode: false,
     deduction_streak: 0,
     last_reveal_index: -1,
+    numbered_symbols: [],
     proven_clicks: 0,
     guess_clicks: 0,
     gut_feeling_used: false,
@@ -1471,6 +1526,7 @@ export function createInitialState(opts: { daily?: boolean; seed?: number } = {}
     flag_mode: false,
     deduction_streak: 0,
     last_reveal_index: -1,
+    numbered_symbols: [],
     proven_clicks: 0,
     guess_clicks: 0,
     gut_feeling_used: false,

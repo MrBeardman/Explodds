@@ -180,6 +180,13 @@ export const STREAK_15_CASH = 5;
 
 // ─── Deduction layer ───────────────────────────────────────────────────────────
 
+// Insight meta-skill: how many SYMBOL tiles per attempt show their bomb count
+// (empties always do). Level 0 is the classic layer — numbers on empties only —
+// after a playtester cleared their very first board with numbers everywhere.
+// Level 0 still grants a few (3): with empties alone a perfect deducer died in
+// cycle 1 in the bot test — that's a coin flip, not a harder skill game.
+export const INSIGHT_SLOTS_BY_LEVEL = [5, 8, 12, Infinity];
+
 export const DEDUCTION_MULT_GAIN = 0.03;      // mult per PROVEN-safe click (on top of the symbol gain)
 export const LOGICIAN_MULT_GAIN = 0.06;       // Logician relic replaces the gain above
 export const ECHO_REVEALED_EMPTIES = 2;       // Echo relic: numbers pre-revealed on the board after a bust
@@ -367,6 +374,7 @@ export const ALL_RELICS: ShopRelicItem[] = [
   { id: 'gut_feeling',     name: 'Gut Feeling',      cost: 16, emoji: '🫀', rarity: 'legendary', description: 'Once per cycle, a guess that would hit a bomb cashes you out instead — for half the winnings', sold: false, owned: false },
   { id: 'echo',            name: 'Echo',             cost: 10, emoji: '📣', rarity: 'common',    description: `After a bust, the next board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
   { id: 'second_sight',    name: 'Second Sight',     cost: 12, emoji: '👁', rarity: 'rare',      description: 'Hinted (known-safe) tiles show their bomb count before you reveal them', sold: false, owned: false },
+  { id: 'sixth_sense',     name: 'Sixth Sense',      cost: 14, emoji: '🧿', rarity: 'rare',      description: 'Every symbol tile you reveal shows its bomb count (ignores your Insight level)', sold: false, owned: false },
   { id: 'cartographer',    name: 'Cartographer',     cost: 18, emoji: '🗺', rarity: 'legendary', description: `Every board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
   // Gambler archetype
   { id: 'double_down',     name: 'Double Down',      cost: 12, emoji: '🎲', rarity: 'rare',      description: 'Bets of at least half your wallet pay ×1.3 winnings', sold: false, owned: false },

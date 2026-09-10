@@ -37,6 +37,17 @@ export const SKILLS: SkillDef[] = [
     ],
   },
   {
+    id: 'insight',
+    name: 'Insight',
+    emoji: '🔢',
+    levels: [
+      { level: 0, name: 'Untrained', description: 'Empty tiles always show their adjacent-bomb count; only the first 5 symbol tiles you reveal each attempt do.', cost: 0 },
+      { level: 1, name: 'Glimpse',   description: 'The first 8 symbol tiles you reveal each attempt show their bomb count.', cost: 4 },
+      { level: 2, name: 'Focus',     description: 'The first 12 symbol tiles you reveal each attempt show their bomb count.', cost: 6 },
+      { level: 3, name: 'Insight',   description: 'Every revealed tile shows its bomb count.', cost: 10 },
+    ],
+  },
+  {
     id: 'bomb_flag',
     name: 'Bomb Sense',
     emoji: '🚩',
@@ -77,7 +88,7 @@ export interface MetaProgress {
 const STORAGE_KEY = 'explodds_meta';
 
 function defaultMeta(): MetaProgress {
-  return { prestige_points: 0, skills: { cascade: 0, bomb_flag: 0 }, unlocks: [], daily: null };
+  return { prestige_points: 0, skills: { cascade: 0, bomb_flag: 0, insight: 0 }, unlocks: [], daily: null };
 }
 
 // ─── Unlocks ───────────────────────────────────────────────────────────────────
