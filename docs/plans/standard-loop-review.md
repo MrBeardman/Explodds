@@ -154,6 +154,14 @@ at Insight 0 4 / 9 (a floor of 0 or 3 numbers gave 1 / 2 — pure luck); Insight
 1 7 / 14; Insight 3 or Sixth Sense 14 / 27; + Ledger 10 / 14. The meta ladder
 is deliberately steep: information is the progression axis now.
 
+## v0.2.0 / v0.3.0 (same day)
+- Board stays revealed behind a right-docked results card after cashout; $80
+  start; covering the deadline keeps the cycle open (FINISH CYCLE button);
+  deposit presets ALL OWED / HALF / ALL BUT BET + stepper + interest projection.
+- ACTIVE RULES card in the HUD (Insight slots left, Cascade Sense, Bomb Sense,
+  stateful relics, Collateral, boss countdowns, traits/this-cycle); `?` badge
+  on symbol tiles revealed without a number; consumables reorderable in BET.
+
 ## Still open
 - Compass / Assayer-style relics that change the *shape* of numbers (skipped:
   Compass is a sidegrade, Assayer needs a second number on the tile).

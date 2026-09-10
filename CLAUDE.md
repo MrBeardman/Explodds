@@ -38,7 +38,9 @@ previews the upcoming boss so players can prep. Beating one pays +8🎫.
 EMPTY tiles always show a minesweeper-style number = count of adjacent bombs; revealed
 SYMBOL tiles show theirs only when the **Insight** meta-skill grants it (level 0: the
 first 5 symbol reveals per attempt; 1: 8; 2: 12; 3: all — `INSIGHT_SLOTS_BY_LEVEL`,
-tracked in `state.numbered_symbols`) or the **Sixth Sense** relic is owned. A
+tracked in `state.numbered_symbols`) or the **Sixth Sense** relic is owned; a revealed
+symbol tile that got NO number shows a dim `?` badge (Grid.tsx) so it never reads as
+"zero bombs", and the HUD's ACTIVE RULES card counts the slots left this attempt. A
 playtester cleared their very first board with numbers on every tile, so information
 is now something you earn across runs (prestige) and within a run (relics).
 `src/deduction.ts` is the single source of truth for what number a tile shows and
@@ -122,7 +124,10 @@ src/
 ├── index.css         — CSS variables, animations, stat cards, rarity colors
 └── components/
     ├── Grid.tsx           — 5×5 tile grid + adjacency numbers + bust flash + post-bust reveal + ⓘ overlay
-    ├── HUD.tsx            — Right rail: MULT+streak (top), boss rule, attempts, modifier chips
+    ├── HUD.tsx            — Right rail: MULT+streak (top), PROVEN, boss rule, attempts, ACTIVE RULES
+    │                        (every rule with live state: Insight slots left, Cascade Sense,
+    │                        Bomb Sense flags, stateful relics, Collateral, boss countdowns,
+    │                        traits + this cycle's pick — `activeRules()` builds the rows)
     ├── CycleHeader.tsx    — Slim cycle number + boss countdown, ABOVE the board
     ├── Paytable.tsx       — Left rail top card: GENERAL symbol odds + payout (not board-specific);
     │                        also reused inline inside Shop.tsx behind the 👁 ODDS toggle
@@ -937,6 +942,7 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 | PLACE_BET | Button click | wallet -= bet, generate board → PLACEMENT or CLEARING |
 | DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — never ends the cycle; re-snaps current_bet |
 | FINISH_CYCLE | FINISH CYCLE → SHOP button (BET phase, deadline covered) | finishCycle → resolveCycleSuccess, forfeiting remaining attempts |
+| MOVE_CONSUMABLE | ◀ ▶ under an owned item (BET phase) | moveConsumable — reorders consumables_owned; placement (defuser/lucky tile) and auto-use follow that order |
 | PLACE_CONSUMABLE | Tile click in PLACEMENT | assign consumable to tile |
 | SKIP_PLACEMENT | Button | skip remaining placements → CLEARING |
 | TILE_CLICK | Grid click | handleTileClick — routes to toggleFlag if flag_mode, applyProbe if pending_probe, applyScanner if scanner armed, else opening/proven-tagging → symbol/empty/bomb logic |

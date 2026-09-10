@@ -330,15 +330,18 @@ function TileContent({
         <span className={`${glyph} leading-none ${isAnimating ? 'icon-pop' : ''}`}>
           {def.emoji}
         </span>
-        {/* Adjacent bomb count — every revealed safe tile shows one (Blackout hides these) */}
-        {adjacentBombs > 0 && (
+        {/* Adjacent bomb count when this tile earned one (Insight slot / Sixth Sense);
+            a dim "?" when it didn't, so "no number" never reads as "zero bombs" */}
+        {shownNumber === null ? (
+          <span className="absolute bottom-0.5 right-1 font-mono text-xs leading-none" style={{ color: 'var(--text-dim)' }} title="No bomb count on this tile — out of Insight slots this attempt">?</span>
+        ) : shownNumber > 0 ? (
           <span
             className="absolute bottom-0.5 right-1 font-mono font-bold text-xs leading-none"
-            style={{ color: ADJ_COLORS[adjacentBombs] }}
+            style={{ color: ADJ_COLORS[shownNumber] }}
           >
-            {adjacentBombs}
+            {shownNumber}
           </span>
-        )}
+        ) : null}
       </>
     );
   }

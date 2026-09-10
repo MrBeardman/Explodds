@@ -5,7 +5,7 @@ import {
   handleBustFlashEnd, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
   maxPlayerFlags,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo, betOptions, snapBet, finishCycle,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo, betOptions, snapBet, finishCycle, moveConsumable,
   resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from '../gameLogic';
@@ -40,6 +40,7 @@ type Action =
   | { type: 'PLACE_BET' }
   | { type: 'DEPOSIT'; amount: number }
   | { type: 'FINISH_CYCLE' }
+  | { type: 'MOVE_CONSUMABLE'; index: number; dir: -1 | 1 }
   | { type: 'PLACE_CONSUMABLE'; tileIndex: number }
   | { type: 'SKIP_PLACEMENT' }
   | { type: 'TILE_CLICK'; index: number }
@@ -100,6 +101,9 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'FINISH_CYCLE':
       return finishCycle(state);
+
+    case 'MOVE_CONSUMABLE':
+      return moveConsumable(state, action.index, action.dir);
 
     case 'PLACE_CONSUMABLE': {
       const idx = state.placing_index;
@@ -902,13 +906,22 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
       {/* Consumable shelf */}
       {state.consumables_owned.filter(c => c !== 'scanner' && c !== 'probe').length > 0 && (
         <div className="flex flex-col gap-1">
-          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ITEMS</div>
+          <div className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
+            ITEMS{isBetting ? ' · order = use order' : ''}
+          </div>
           <div className="flex flex-wrap gap-1.5">
-            {state.consumables_owned.filter(c => c !== 'scanner' && c !== 'probe').map((c, i) => {
+            {state.consumables_owned.map((c, i) => {
+              if (c === 'scanner' || c === 'probe') return null;
               const def = ALL_CONSUMABLES.find(x => x.id === c);
               return (
-                <span key={i} title={`${def?.name}: ${def?.description}`} className="slot cursor-default">
-                  {def?.emoji}
+                <span key={`${c}-${i}`} className="flex flex-col items-center gap-0.5">
+                  <span title={`${def?.name}: ${def?.description}`} className="slot cursor-default">{def?.emoji}</span>
+                  {isBetting && (
+                    <span className="flex gap-0.5">
+                      <button onClick={() => dispatch({ type: 'MOVE_CONSUMABLE', index: i, dir: -1 })} disabled={i === 0} className="font-mono text-[10px] px-1 rounded cursor-pointer" style={{ color: i === 0 ? 'var(--text-dim)' : 'var(--text-muted)', background: 'var(--bg-raised)', border: '1px solid var(--border)' }} title="Use earlier">◀</button>
+                      <button onClick={() => dispatch({ type: 'MOVE_CONSUMABLE', index: i, dir: 1 })} disabled={i === state.consumables_owned.length - 1} className="font-mono text-[10px] px-1 rounded cursor-pointer" style={{ color: i === state.consumables_owned.length - 1 ? 'var(--text-dim)' : 'var(--text-muted)', background: 'var(--bg-raised)', border: '1px solid var(--border)' }} title="Use later">▶</button>
+                    </span>
+                  )}
                 </span>
               );
             })}

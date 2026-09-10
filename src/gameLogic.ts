@@ -1044,6 +1044,17 @@ export function handleDeposit(state: GameState, amount: number): GameState {
   return next;
 }
 
+// Reorder owned consumables (BET phase). Placement (defuser / lucky tile) and
+// auto-use follow this order, so the player decides what gets used first.
+export function moveConsumable(state: GameState, index: number, dir: -1 | 1): GameState {
+  if (state.phase !== 'BET') return state;
+  const j = index + dir;
+  if (index < 0 || index >= state.consumables_owned.length || j < 0 || j >= state.consumables_owned.length) return state;
+  const list = [...state.consumables_owned];
+  [list[index], list[j]] = [list[j], list[index]];
+  return { ...state, consumables_owned: list };
+}
+
 // Deadline covered → the player chooses to move on (forfeiting any attempts left)
 export function finishCycle(state: GameState): GameState {
   if (state.phase !== 'BET' || state.deposited < state.deadline) return state;

@@ -1,6 +1,73 @@
-import { BOSS_MAP, EVENT_CARD_MAP, DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, attemptsForCycle } from '../constants';
-import { isBossCycle } from '../gameLogic';
+import {
+  BOSS_MAP, EVENT_CARD_MAP, DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, attemptsForCycle,
+  INSIGHT_SLOTS_BY_LEVEL, CASCADE_LEVEL1_CAP, CURFEW_CLICKS, COLLATERAL_DEPOSIT_FRAC,
+} from '../constants';
+import { isBossCycle, maxPlayerFlags } from '../gameLogic';
+import { ledgerRow } from '../deduction';
 import type { GameState } from '../types';
+
+// One row of the ACTIVE RULES card: an icon, a name, a live value. `tone`
+// colours the value (ok / warn / bad / info). Only rules with live state get a
+// row — static relics live on the relic shelf.
+interface RuleRow { key: string; icon: string; name: string; value: string; tone?: 'ok' | 'warn' | 'bad' | 'info'; title: string }
+
+function activeRules(state: GameState): RuleRow[] {
+  const rows: RuleRow[] = [];
+  const inAttempt = state.phase === 'CLEARING' || state.phase === 'PLACEMENT' || state.phase === 'BUST_FLASH';
+
+  // ── Skills (this run) ──
+  const sixth = state.relics.includes('sixth_sense');
+  const slots = INSIGHT_SLOTS_BY_LEVEL[Math.min(state.skills.insight ?? 0, INSIGHT_SLOTS_BY_LEVEL.length - 1)];
+  if (sixth) {
+    rows.push({ key: 'insight', icon: '🧿', name: 'Sixth Sense', value: 'all symbol tiles numbered', tone: 'ok', title: 'Every revealed symbol tile shows its bomb count this run (relic)' });
+  } else if (state.active_boss === 'blackout') {
+    rows.push({ key: 'insight', icon: '🔢', name: 'Insight', value: 'symbols dark (Blackout)', tone: 'bad', title: 'The Blackout boss hides bomb counts on symbol tiles; empties still show theirs' });
+  } else if (slots === Infinity) {
+    rows.push({ key: 'insight', icon: '🔢', name: 'Insight', value: 'every tile numbered', tone: 'ok', title: 'Insight level 3: every revealed tile shows its bomb count' });
+  } else {
+    const left = Math.max(0, slots - state.numbered_symbols.length);
+    rows.push({
+      key: 'insight', icon: '🔢', name: 'Insight',
+      value: inAttempt ? `${left} / ${slots} numbered tiles left` : `${slots} numbered symbol tiles / attempt`,
+      tone: !inAttempt ? 'info' : left === 0 ? 'bad' : left === 1 ? 'warn' : 'ok',
+      title: 'Empty tiles always show their bomb count. Symbol tiles only do for the first N you reveal each attempt — a revealed symbol with a "?" got no number. Raise Insight on the Start Screen or find the Sixth Sense relic.',
+    });
+  }
+  const cascade = state.skills.cascade ?? 0;
+  rows.push({
+    key: 'cascade', icon: '🌊', name: 'Cascade Sense',
+    value: cascade === 0 ? 'single-tile opening · no cascade' : cascade === 1 ? `plus opening · cascade ≤${CASCADE_LEVEL1_CAP}` : 'plus opening · unlimited cascade',
+    tone: 'info',
+    title: 'What your first click guarantees bomb-free, and how far an empty 0 chains open connected safe tiles',
+  });
+  const flagCap = maxPlayerFlags(state);
+  if ((state.skills.bomb_flag ?? 0) > 0) {
+    rows.push({ key: 'flags', icon: '🚩', name: 'Bomb Sense', value: inAttempt ? `flags ${state.player_flags.length} / ${flagCap}` : `up to ${state.skills.bomb_flag} flags / attempt`, tone: 'info', title: 'Flag suspected bombs; each correct flag pays a bonus when the attempt ends' });
+  }
+
+  // ── Relics with state ──
+  if (state.relics.includes('gut_feeling')) rows.push({ key: 'gut', icon: '🫀', name: 'Gut Feeling', value: state.gut_feeling_used ? 'used this cycle' : 'ready', tone: state.gut_feeling_used ? 'bad' : 'ok', title: 'Once per cycle, a guess that would hit a bomb cashes you out instead, for half the winnings' });
+  if (state.relics.includes('bomb_suit')) rows.push({ key: 'suit', icon: '🦺', name: 'Bomb Suit', value: state.bomb_suit_used ? 'used this cycle' : 'ready', tone: state.bomb_suit_used ? 'bad' : 'ok', title: 'The first bust each cycle refunds your stake' });
+  if (state.relics.includes('echo') && state.last_attempt_busted && !inAttempt) rows.push({ key: 'echo', icon: '📣', name: 'Echo', value: 'next board starts with 2 numbers', tone: 'ok', title: 'After a bust, the next board starts with two empties already revealed' });
+  if (state.relics.includes('ledger')) {
+    const r = ledgerRow(state, state.board);
+    rows.push({ key: 'ledger', icon: '📒', name: 'Ledger', value: r === null ? 'reveal a tile to read its row' : `reading row ${r + 1}`, tone: r === null ? 'info' : 'ok', title: 'The row you last revealed in shows its bomb total at the board edge' });
+  }
+
+  // ── Cycle rules ──
+  const collateralNeed = state.deadline * COLLATERAL_DEPOSIT_FRAC;
+  if (state.deposited >= collateralNeed) rows.push({ key: 'collateral', icon: '🏦', name: 'Collateral', value: '−1 bomb this cycle', tone: 'ok', title: `At least ${Math.round(COLLATERAL_DEPOSIT_FRAC * 100)}% of the deadline is deposited — every board this cycle deals one fewer bomb` });
+  else if (state.phase === 'BET') rows.push({ key: 'collateral', icon: '🏦', name: 'Collateral', value: `deposit $${Math.ceil(collateralNeed - state.deposited)} more for −1 bomb`, tone: 'info', title: `Deposit ${Math.round(COLLATERAL_DEPOSIT_FRAC * 100)}% of the deadline and every board this cycle deals one fewer bomb` });
+  if (state.active_boss === 'curfew' && inAttempt) rows.push({ key: 'curfew', icon: '⏰', name: 'Curfew', value: `${Math.max(0, CURFEW_CLICKS - state.clicks_this_attempt)} clicks left`, tone: 'warn', title: 'The attempt cashes out on its own when the clicks run out' });
+  if (state.active_boss === 'saboteur' && inAttempt) rows.push({ key: 'sab', icon: '🧨', name: 'Saboteur', value: `arms a bomb in ${4 - (state.tiles_cleared % 4)} clears`, tone: 'warn', title: 'Every 4th symbol cleared turns a hidden tile into a bomb' });
+
+  // ── Modifiers: permanent traits + this cycle's pick ──
+  for (const id of state.traits) { const d = EVENT_CARD_MAP[id]; rows.push({ key: `trait-${id}`, icon: d.emoji, name: d.name, value: 'trait · all run', tone: 'ok', title: `${d.description} — permanent this run` }); }
+  for (const id of state.cycle_events) { const d = EVENT_CARD_MAP[id]; rows.push({ key: `cycle-${id}`, icon: d.emoji, name: d.name, value: 'this cycle', tone: 'info', title: `${d.description} — this cycle only` }); }
+  return rows;
+}
+
+const TONE: Record<NonNullable<RuleRow['tone']>, string> = { ok: 'var(--green-bright)', warn: 'var(--gold-bright)', bad: 'var(--red)', info: 'var(--text-muted)' };
 
 interface Props {
   state: GameState;
@@ -79,47 +146,19 @@ export function HUD({ state }: Props) {
         </div>
       </div>
 
-      {/* Modifiers — permanent traits (picked twice) and this cycle's pick */}
-      {state.active_events.length > 0 && (
-        <div className="stat-card">
-          {state.traits.length > 0 && (
-            <>
-              <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
-                TRAITS {state.traits.length}
-              </div>
-              <div className="flex flex-col gap-1 mb-2">
-                {state.traits.map(id => {
-                  const def = EVENT_CARD_MAP[id];
-                  return (
-                    <div key={id} className="flex items-center gap-1.5" title={`${def.description} — permanent this run`}>
-                      <span className="text-sm leading-none">{def.emoji}</span>
-                      <span className="font-mono text-xs truncate" style={{ color: 'var(--gold)' }}>{def.name.toUpperCase()}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-          {state.cycle_events.length > 0 && (
-            <>
-              <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
-                THIS CYCLE
-              </div>
-              <div className="flex flex-col gap-1">
-                {state.cycle_events.map(id => {
-                  const def = EVENT_CARD_MAP[id];
-                  return (
-                    <div key={id} className="flex items-center gap-1.5" title={`${def.description} — this cycle only`}>
-                      <span className="text-sm leading-none">{def.emoji}</span>
-                      <span className="font-mono text-xs truncate" style={{ color: 'var(--text-primary)' }}>{def.name.toUpperCase()}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+      {/* ACTIVE RULES — every rule with live state: skills, stateful relics, cycle rules, modifiers */}
+      <div className="stat-card">
+        <div className="font-mono text-xs mb-1.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ACTIVE RULES</div>
+        <div className="flex flex-col gap-1">
+          {activeRules(state).map(r => (
+            <div key={r.key} className="flex items-center gap-1.5 font-mono text-xs" title={r.title}>
+              <span className="text-sm leading-none w-4 text-center">{r.icon}</span>
+              <span className="truncate" style={{ color: 'var(--text-primary)' }}>{r.name}</span>
+              <span className="ml-auto text-right shrink-0" style={{ color: TONE[r.tone ?? 'info'] }}>{r.value}</span>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
 
       {/* Next-boss hint on the cycle before a boss */}
       {!state.active_boss && isBossCycle(state.cycle_number + 1) && (
