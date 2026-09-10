@@ -143,9 +143,12 @@ export function ResultsOverlay({ breakdown, onContinue }: Props) {
 
   return (
     <div
-      className="absolute inset-0 z-30 flex items-center justify-end p-4 overlay-in pointer-events-none"
-      style={{ background: 'linear-gradient(90deg, rgba(4,6,10,0.15) 0%, rgba(4,6,10,0.35) 55%, rgba(4,6,10,0.92) 100%)' }}
+      className="absolute inset-0 z-30 flex items-center justify-center p-4 overlay-in pointer-events-none"
+      style={{ background: 'rgba(4,6,10,0.35)' }}
     >
+      {/* Same max width as the table below, so the card sits over the right rail
+          of the layout (next to the revealed board), not at the screen edge */}
+      <div className="w-full max-w-5xl flex justify-end pointer-events-none">
       <div
         className="card-rise w-full max-w-sm rounded-2xl flex flex-col relative overflow-hidden pointer-events-auto"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
@@ -211,6 +214,7 @@ export function ResultsOverlay({ breakdown, onContinue }: Props) {
             CONTINUE
           </button>
         </div>
+      </div>
       </div>
     </div>
   );

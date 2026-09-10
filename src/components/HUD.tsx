@@ -27,19 +27,22 @@ function activeRules(state: GameState): RuleRow[] {
   } else {
     const left = Math.max(0, slots - state.numbered_symbols.length);
     rows.push({
-      key: 'insight', icon: '🔢', name: 'Insight',
+      key: 'insight', icon: '🔢', name: (state.skills.insight ?? 0) > 0 ? 'Insight' : 'Numbered tiles',
       value: inAttempt ? `${left} / ${slots} numbered tiles left` : `${slots} numbered symbol tiles / attempt`,
       tone: !inAttempt ? 'info' : left === 0 ? 'bad' : left === 1 ? 'warn' : 'ok',
       title: 'Empty tiles always show their bomb count. Symbol tiles only do for the first N you reveal each attempt — a revealed symbol with a "?" got no number. Raise Insight on the Start Screen or find the Sixth Sense relic.',
     });
   }
+  // Cascade Sense only appears once it's actually upgraded — level 0 is the baseline
   const cascade = state.skills.cascade ?? 0;
-  rows.push({
-    key: 'cascade', icon: '🌊', name: 'Cascade Sense',
-    value: cascade === 0 ? 'single-tile opening · no cascade' : cascade === 1 ? `plus opening · cascade ≤${CASCADE_LEVEL1_CAP}` : 'plus opening · unlimited cascade',
-    tone: 'info',
-    title: 'What your first click guarantees bomb-free, and how far an empty 0 chains open connected safe tiles',
-  });
+  if (cascade > 0) {
+    rows.push({
+      key: 'cascade', icon: '🌊', name: 'Cascade Sense',
+      value: cascade === 1 ? `plus opening · cascade ≤${CASCADE_LEVEL1_CAP}` : 'plus opening · unlimited cascade',
+      tone: 'info',
+      title: 'What your first click guarantees bomb-free, and how far an empty 0 chains open connected safe tiles',
+    });
+  }
   const flagCap = maxPlayerFlags(state);
   if ((state.skills.bomb_flag ?? 0) > 0) {
     rows.push({ key: 'flags', icon: '🚩', name: 'Bomb Sense', value: inAttempt ? `flags ${state.player_flags.length} / ${flagCap}` : `up to ${state.skills.bomb_flag} flags / attempt`, tone: 'info', title: 'Flag suspected bombs; each correct flag pays a bonus when the attempt ends' });
