@@ -134,6 +134,7 @@ export function playRun({ player = 'solver', seed = 1, cascade = 1, insight = 0,
         break;
       case 'BOSS_INTRO': s = GL.toBetPhase(s); break;
       case 'BET': {
+        if (s.deposited >= s.deadline) { s = GL.finishCycle(s); break; }
         const minBet = GL.getMinBet(s);
         if (depositEarly) {
           // Collateral play: bank half the deadline up front (−1 bomb + interest), keep the bet

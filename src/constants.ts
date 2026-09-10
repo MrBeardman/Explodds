@@ -395,7 +395,7 @@ export const RELIC_MAP = Object.fromEntries(
 
 // ─── Grid constants ───────────────────────────────────────────────────────────
 
-export const STARTING_WALLET = 150;
+export const STARTING_WALLET = 80; // was 150 — cycle 1's $60 deadline could be paid on the spot with no decision
 export const BET_STEP = 5;
 export const MAX_ACTIVE_RELICS = 6;
 export const MAX_SHOP_ITEMS = 3;

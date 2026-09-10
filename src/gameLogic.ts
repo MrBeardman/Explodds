@@ -1024,8 +1024,11 @@ export function interestRate(state: GameState): number {
 
 // Move cash from wallet into the deposited pool (toward the deadline). Only
 // legal between attempts. Deposited cash can never be bet again, but it earns
-// interest on every future cashout this cycle — and finishing the deposit ends
-// the cycle immediately, regardless of attempts left.
+// interest on every future cashout this cycle. Covering the deadline does NOT
+// end the cycle any more — the remaining attempts stay playable (and keep
+// paying interest on the full deposit); the player ends it with FINISH_CYCLE
+// or it ends when attempts run out. (It used to end at once, which forced
+// "deposit just under the deadline" click-dancing to keep playing.)
 export function handleDeposit(state: GameState, amount: number): GameState {
   if (state.phase !== 'BET') return state;
   const cap = Math.max(0, state.deadline - state.deposited);
@@ -1034,12 +1037,21 @@ export function handleDeposit(state: GameState, amount: number): GameState {
 
   const wallet = parseFloat((state.wallet - amt).toFixed(2));
   const deposited = parseFloat((state.deposited + amt).toFixed(2));
-  const current_bet = clampBetToWallet(state.current_bet, wallet, getMinBet(state));
-  const next: GameState = { ...state, wallet, deposited, current_bet };
+  const next: GameState = { ...state, wallet, deposited };
+  next.current_bet = snapBet(next, next.current_bet);
 
-  if (deposited >= state.deadline) return resolveCycleSuccess(next);
-  if (wallet <= 0) return resolveCycleFailure(next);
+  if (wallet <= 0 && deposited < state.deadline) return resolveCycleFailure(next);
   return next;
+}
+
+// Deadline covered → the player chooses to move on (forfeiting any attempts left)
+export function finishCycle(state: GameState): GameState {
+  if (state.phase !== 'BET' || state.deposited < state.deadline) return state;
+  return resolveCycleSuccess(state);
+}
+
+export function isDeadlineCovered(state: GameState): boolean {
+  return state.deposited >= state.deadline;
 }
 
 // ─── Stake return ─────────────────────────────────────────────────────────────
@@ -1159,7 +1171,8 @@ export function handleCashout(state: GameState): GameState {
     pending_probe: false,
     consumables_placed: [],
     pending_scanner_axis: null,
-    board: [],
+    // board is deliberately KEPT — the RESULTS phase shows it fully revealed;
+    // dismissResults clears it
   };
 
   const next = { ...state, ...baseState } as GameState;
@@ -1197,7 +1210,9 @@ export function handleCashout(state: GameState): GameState {
 // Applies the phase transition that handleCashout already computed and deferred.
 export function dismissResults(state: GameState): GameState {
   if (state.phase !== 'RESULTS' || state.pending_next_phase === null) return state;
-  return { ...state, phase: state.pending_next_phase, pending_results: null, pending_next_phase: null };
+  // A cashout-based game over keeps the board so GameOver can show the final reveal
+  const board = state.pending_next_phase === 'GAME_OVER' ? state.board : [];
+  return { ...state, phase: state.pending_next_phase, board, pending_results: null, pending_next_phase: null };
 }
 
 // ─── Cycle resolution ─────────────────────────────────────────────────────────

@@ -147,7 +147,7 @@ src/
 phase: 'START' | 'EVENT_CARD' | 'BOSS_INTRO' | 'BET' | 'PLACEMENT' | 'CLEARING' | 'BUST_FLASH' | 'RESULTS' | 'SHOP' | 'GAME_OVER'
 
 // Economy — two SEPARATE pools, wallet is bettable, deposited is locked toward the deadline
-wallet: number        // player's cash (starts $150)
+wallet: number        // player's cash (starts $80 — STARTING_WALLET; was 150, which paid cycle 1 outright)
 tickets: number       // second currency for relics (starts 0)
 
 // Cycle
@@ -224,8 +224,10 @@ SELECT_EVENT_CARD → BET  (via toBetPhase; APPENDS to active_events, never repl
 DEPOSIT (only legal in BET phase):
   amount clamped to [0, min(wallet, deadline − deposited)]
   wallet -= amount; deposited += amount
-  if deposited >= deadline: resolveCycleSuccess() — cycle ends NOW, remaining attempts unused
-  else if wallet <= 0: resolveCycleFailure()
+  covering the deadline does NOT end the cycle — remaining attempts stay playable
+  (interest keeps ticking on the full deposit); FINISH_CYCLE (button, only when
+  covered) → resolveCycleSuccess(), or attempts running out settles it as usual
+  if wallet <= 0 and not covered: resolveCycleFailure()
 
 PLACE_BET:
   wallet -= bet  (immediately)
@@ -256,12 +258,15 @@ BUST_FLASH (~700ms auto flash, then a manual full-board reveal):
   if attempts = 0: settleFinalAttempt()
 
 RESULTS (shown after every cashout, not on bust):
-  ResultsOverlay reads state.pending_results (cash/ticket breakdown, before/after
-  wallet+ticket totals) — counts the total up, "flies" it into the wallet/ticket
-  stat cards (pulse + value swap), lists every line item. CONTINUE dispatches
+  The board is KEPT (handleCashout no longer clears it) and the Grid renders it
+  fully revealed (revealAll) while ResultsOverlay docks over the RIGHT rail —
+  the player can study what they left on the table. ResultsOverlay reads
+  state.pending_results (cash/ticket breakdown, before/after wallet+ticket
+  totals) — counts the total up, "flies" it into the wallet/ticket stat cards
+  (pulse + value swap), lists every line item. CONTINUE dispatches
   DISMISS_RESULTS → dismissResults() applies pending_next_phase (BET, SHOP, or
-  GAME_OVER — whatever handleCashout already resolved) and clears both pending_*
-  fields.
+  GAME_OVER — whatever handleCashout already resolved), clears the board
+  (kept only for GAME_OVER's final reveal) and both pending_* fields.
 
 toBetPhase() — the only true dead end:
   if wallet <= 0 AND deposited < deadline: resolveCycleFailure() (can neither bet nor deposit)
@@ -879,9 +884,10 @@ Centered table (max-w-5xl, vertically centered, floating casino-panel cards):
 │  scanner/items │  │                    │  │                  │
 └────────────────┘  └────────────────────┘  └──────────────────┘
 
-Deposit is pick-then-confirm: three $ preset buttons (25%/50%/max of what's
-depositable, no slider) only set a local `depositAmount` (LeftPanel state), a
-separate CONFIRM DEPOSIT button actually dispatches DEPOSIT. The current
+Deposit is pick-then-confirm: presets ALL OWED / HALF / ALL BUT BET plus a
+−25/−5/+5/+25 stepper only set a local `depositAmount` (LeftPanel state), with a
+live "earns +$X per cashout" projection; a separate CONFIRM DEPOSIT button actually
+dispatches DEPOSIT. Once covered, the deposit UI is replaced by FINISH CYCLE → SHOP. The current
 effective interestRate(state) is shown right below the deposited/deadline row
 whenever the deadline isn't fully covered yet.
 
@@ -929,7 +935,8 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
 | CONFIRM_BOSS | BossIntro button | BOSS_INTRO → toBetPhase |
 | SET_BET | Slider move | clamp to [minBet, wallet], snap to $5; ignored under Warden |
 | PLACE_BET | Button click | wallet -= bet, generate board → PLACEMENT or CLEARING |
-| DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — may end the cycle immediately |
+| DEPOSIT | CONFIRM DEPOSIT button (BET phase) | handleDeposit — never ends the cycle; re-snaps current_bet |
+| FINISH_CYCLE | FINISH CYCLE → SHOP button (BET phase, deadline covered) | finishCycle → resolveCycleSuccess, forfeiting remaining attempts |
 | PLACE_CONSUMABLE | Tile click in PLACEMENT | assign consumable to tile |
 | SKIP_PLACEMENT | Button | skip remaining placements → CLEARING |
 | TILE_CLICK | Grid click | handleTileClick — routes to toggleFlag if flag_mode, applyProbe if pending_probe, applyScanner if scanner armed, else opening/proven-tagging → symbol/empty/bomb logic |

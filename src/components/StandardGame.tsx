@@ -5,7 +5,7 @@ import {
   handleBustFlashEnd, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
   maxPlayerFlags,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo, betOptions, snapBet,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo, betOptions, snapBet, finishCycle,
   resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from '../gameLogic';
@@ -39,6 +39,7 @@ type Action =
   | { type: 'SET_BET'; amount: number }
   | { type: 'PLACE_BET' }
   | { type: 'DEPOSIT'; amount: number }
+  | { type: 'FINISH_CYCLE' }
   | { type: 'PLACE_CONSUMABLE'; tileIndex: number }
   | { type: 'SKIP_PLACEMENT' }
   | { type: 'TILE_CLICK'; index: number }
@@ -96,6 +97,9 @@ function reducer(state: GameState, action: Action): GameState {
 
     case 'DEPOSIT':
       return handleDeposit(state, action.amount);
+
+    case 'FINISH_CYCLE':
+      return finishCycle(state);
 
     case 'PLACE_CONSUMABLE': {
       const idx = state.placing_index;
@@ -464,7 +468,7 @@ export function StandardGame({ onBackToMenu }: { onBackToMenu: () => void }) {
                   state={state}
                   onTileClick={i => dispatch({ type: 'TILE_CLICK', index: i })}
                   debugReveal={debugReveal}
-                  revealAll={state.phase === 'BUST_FLASH' && bustRevealReady}
+                  revealAll={(state.phase === 'BUST_FLASH' && bustRevealReady) || state.phase === 'RESULTS'}
                 />
               ) : (
                 <EmptyBoardPlaceholder phase={state.phase} />
@@ -637,26 +641,39 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
         )}
         {isBetting && !covered && depositCap > 0 && (
           <div className="flex flex-col gap-1.5 mt-2">
+            {/* Presets: everything owed, half of it, or everything except the selected bet.
+                The max preset is the unrounded depositCap on purpose — rounding could
+                zero out a tiny leftover wallet and soft-lock the phase. */}
             <div className="flex gap-1">
-              {[0.25, 0.5, 1].map(frac => {
-                // The 100% ("max") preset must always equal the full depositCap,
-                // unrounded — rounding it to the nearest $5 could zero out a
-                // small leftover wallet and soft-lock the BET phase (can't bet,
-                // can't deposit, can't advance).
-                const amt = frac === 1
-                  ? depositCap
-                  : Math.max(0, Math.min(depositCap, Math.round((depositCap * frac) / 5) * 5));
-                return (
-                  <button
-                    key={frac}
-                    onClick={() => setDepositAmount(amt)}
-                    className="flex-1 font-mono text-xs py-1 rounded cursor-pointer"
-                    style={{ background: 'var(--bg-raised)', border: '1px solid var(--border)', color: '#60c0ff' }}
-                  >
-                    ${amt}
-                  </button>
-                );
-              })}
+              {([
+                ['ALL OWED', depositCap],
+                ['HALF', Math.max(0, Math.min(depositCap, Math.round((depositCap * 0.5) / 5) * 5))],
+                ['ALL BUT BET', Math.max(0, Math.min(depositCap, state.wallet - state.current_bet))],
+              ] as Array<[string, number]>).map(([label, amt]) => (
+                <button
+                  key={label}
+                  onClick={() => setDepositAmount(amt)}
+                  disabled={amt <= 0}
+                  className="flex-1 font-mono text-[10px] py-1 rounded cursor-pointer leading-tight"
+                  title={label === 'ALL BUT BET' ? 'Deposit everything except the bet you have selected' : label === 'ALL OWED' ? 'Cover the deadline — you keep any attempts left' : 'Half of what is owed'}
+                  style={{ background: depositAmount === amt && amt > 0 ? 'rgba(96,192,255,0.15)' : 'var(--bg-raised)', border: `1px solid ${depositAmount === amt && amt > 0 ? '#60c0ff' : 'var(--border)'}`, color: amt > 0 ? '#60c0ff' : 'var(--text-dim)' }}
+                >
+                  {label}<br />${amt}
+                </button>
+              ))}
+            </div>
+            {/* Stepper */}
+            <div className="flex items-center gap-1 font-mono text-xs">
+              {[-25, -5].map(d => (
+                <button key={d} onClick={() => setDepositAmount(Math.max(0, Math.min(depositCap, depositAmount + d)))} className="chip cursor-pointer px-2 py-0.5" style={{ color: 'var(--text-muted)' }}>{d}</button>
+              ))}
+              <span className="flex-1 text-center" style={{ color: '#60c0ff' }}>${depositAmount}</span>
+              {[5, 25].map(d => (
+                <button key={d} onClick={() => setDepositAmount(Math.max(0, Math.min(depositCap, depositAmount + d)))} className="chip cursor-pointer px-2 py-0.5" style={{ color: 'var(--text-muted)' }}>+{d}</button>
+              ))}
+            </div>
+            <div className="font-mono text-[10px] text-center" style={{ color: 'var(--text-dim)' }} title="Interest is paid on the whole deposited pool on every successful cashout this cycle">
+              ✦ earns +${((state.deposited + depositAmount) * rate).toFixed(2)} per cashout after this
             </div>
             <button
               onClick={() => dispatch({ type: 'DEPOSIT', amount: depositAmount })}
@@ -741,6 +758,18 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
       </div>
 
       <div className="gold-line" />
+
+      {/* Deadline covered: keep playing the remaining attempts, or move on */}
+      {isBetting && covered && (
+        <button
+          onClick={() => dispatch({ type: 'FINISH_CYCLE' })}
+          className="w-full font-display text-base py-2.5 rounded-xl cursor-pointer transition-all duration-150"
+          title={`Deadline paid — go to the shop now, or keep playing your ${state.attempts_remaining} remaining attempt${state.attempts_remaining === 1 ? '' : 's'} for winnings and interest`}
+          style={{ background: 'var(--bg-raised)', color: 'var(--gold)', letterSpacing: '0.06em', border: '1px solid var(--gold)' }}
+        >
+          FINISH CYCLE → SHOP
+        </button>
+      )}
 
       {/* PLACE BET button */}
       {isBetting && (

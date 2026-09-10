@@ -1,6 +1,6 @@
 import logoSrc from '../assets/logo.png';
 import { loadMeta, dailyRecord, todayKey, UNLOCKABLES } from '../meta';
-import { calcDeadline, DEADLINE_GROWTH } from '../constants';
+import { calcDeadline, DEADLINE_GROWTH, STARTING_WALLET } from '../constants';
 
 interface Props { onStart: () => void; onStartDaily: () => void; onOpenSkills: () => void; }
 
@@ -78,7 +78,7 @@ export function StartScreen({ onStart, onStartDaily, onOpenSkills }: Props) {
 
       {/* Stats row */}
       <div className="flex gap-6 text-sm font-mono" style={{ color: 'var(--text-muted)' }}>
-        <span>💵 Start $150</span>
+        <span>💵 Start ${STARTING_WALLET}</span>
         <span>🎯 3 attempts</span>
         <span>🎫 Earn tickets</span>
       </div>

@@ -13,7 +13,7 @@
 // ─── Params (mirror src/constants.ts) ─────────────────────────────────────────
 
 const PARAMS = {
-  startingWallet: 150,
+  startingWallet: 80,
   minBetBase: 10,
   minBetPerCycle: 2,             // MIN_BET_PER_CYCLE — min bet rises each cycle
   betStep: 5,
