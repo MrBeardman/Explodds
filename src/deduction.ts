@@ -101,9 +101,9 @@ export function displayedNumber(state: ShownState, board: Tile[], index: number)
   return n;
 }
 
-// Ledger relic: bomb totals per row (all bombs, hidden or not). Column totals
-// are computed too but not shown — rows alone keep the relic strong without
-// turning every board into a fully determined puzzle.
+// Ledger relic: bomb totals per row (all bombs, hidden or not). Only the row of
+// the LAST deliberate reveal is shown/used (ledgerRow) — every row at once made
+// low-density boards fully determined and the perfect-deducer bot immortal.
 export function rowColTotals(board: Tile[]): { rows: number[]; cols: number[] } {
   const n = boardCols(board);
   const rows = Array(n).fill(0), cols = Array(n).fill(0);
@@ -130,7 +130,13 @@ export interface Deduction {
   hasInfo: boolean;    // at least one number is visible on the board
 }
 
-type AnalyzeState = ShownState & Pick<GameState, 'bombs_this_attempt'>;
+type AnalyzeState = ShownState & Pick<GameState, 'bombs_this_attempt' | 'last_reveal_index'>;
+
+// The row the Ledger relic currently reports, or null
+export function ledgerRow(state: Pick<GameState, 'relics' | 'last_reveal_index'>, board: Tile[]): number | null {
+  if (!state.relics.includes('ledger') || state.last_reveal_index < 0 || board.length === 0) return null;
+  return Math.floor(state.last_reveal_index / boardCols(board));
+}
 
 export function analyzeBoard(state: AnalyzeState, board: Tile[]): Deduction {
   const hidden = new Set<number>();
@@ -153,13 +159,12 @@ export function analyzeBoard(state: AnalyzeState, board: Tile[]): Deduction {
     const hs = numberNeighbors(state, board, t.index).filter(j => hidden.has(j) || bombs.has(j));
     if (hs.length) cons.push([n, hs]);
   }
-  if (state.relics.includes('ledger')) {
+  const lr = ledgerRow(state, board);
+  if (lr !== null) {
     const size = boardCols(board);
     const { rows } = rowColTotals(board);
-    for (let r = 0; r < size; r++) {
-      const cells = Array.from({ length: size }, (_, c) => r * size + c).filter(j => hidden.has(j) || bombs.has(j));
-      if (cells.length) cons.push([rows[r], cells]);
-    }
+    const cells = Array.from({ length: size }, (_, c) => lr * size + c).filter(j => hidden.has(j) || bombs.has(j));
+    if (cells.length) cons.push([rows[lr], cells]);
   }
   // Global: total bombs still unaccounted for (the 💣 counter in the grid footer)
   const allHiddenOrKnown = [...hidden, ...[...bombs].filter(j => !hidden.has(j))];

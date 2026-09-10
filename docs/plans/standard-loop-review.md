@@ -112,6 +112,30 @@ Gut Feeling is the strongest single relic for a perfect deducer (it turns one
 forced guess per cycle into a safe cashout) — it is a 16🎫 legendary for that
 reason; a human who guesses more than once per cycle gets far less out of it.
 
+## Third pass — first human playtest (2026-09-10)
+
+Findings: (1) "after some money it's easy to click once or twice and cash
+out" — the free opening plus one provable click returned the full stake and
+winnings scaled with the bet, a risk-free ~30% wallet gain per attempt;
+(2) "11 bombs on a 6×6 is way too much" — the density curve reached 28–34%,
+well past expert minesweeper (~21%); (3) "$22 for a pack is nothing when the
+deadline is $1,000".
+
+Changes: the full stake only comes back once `STAKE_RETURN_CLEAR_FRAC` (30%)
+of the safe tiles are revealed (pro rata before that, shown live on the
+CASHOUT button); densities cut to 16–22% with `[4,4,5,5,6]` on the 5×5 cycles
+and the bet-ratio cap at +4; shop cash prices scale with the deadline and flat
+cash rewards with the bet; tile cash normalised by board area (a full clear
+pays the same ~3× multiple on any board); multiplier growth halved (a cycle-1
+full clear had paid 7–9× and taken the wallet ×40); 2 attempts per cycle from
+cycle 10; collateral needs 75% deposited, interest 8%; Ledger shows one row.
+
+Bot numbers after it (median / p90): random 1 / 2; noisy solver 2 / 3;
+perfect solver min bet ~5 / 10; 30% bets ~4–6 / 13; + Ledger ~12 / 24;
++ Gut Feeling + Echo ~5–10 / 14; banking 75% collateral early ~16 / 29 (the
+one line a perfect deducer can still ride a long way — a human who can't
+clear 88% of boards gets far less from it).
+
 ## Still open
 - Compass / Assayer-style relics that change the *shape* of numbers (skipped:
   Compass is a sidegrade, Assayer needs a second number on the tile).

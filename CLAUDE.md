@@ -283,8 +283,8 @@ SHOP → [START CYCLE N+1] → EVENT_CARD (or BOSS_INTRO)
 // already deposited. This is the reward for depositing EARLY in a cycle:
 // every subsequent successful cashout that cycle pays another tick.
 interestRate(state):
-  base = 0.07 (BASE_INTEREST_RATE)
-  +0.03 if Compound Chip relic
+  base = 0.08 (BASE_INTEREST_RATE)
+  +0.05 if Compound Chip relic
   ×2 if Inflator boss
   wallet += deposited × interestRate()   // on every non-bust cashout
 
@@ -395,8 +395,8 @@ progression only ever happens via the Start Screen's SkillTree.
 ```typescript
 // Deadlines
 cycle 1–5: [60, 90, 120, 160, 200]
-cycle 6+:  Math.round(prev * 1.25 / 10) * 10
-"The house notices": next deadline = max(curve, round(wallet × DEADLINE_WALLET_CHASE(0.55)))
+cycle 6+:  Math.round(prev * 1.3 / 10) * 10
+"The house notices": next deadline = max(curve, round(wallet × DEADLINE_WALLET_CHASE(0.6)))
   — the backstop against runaway compounding; irrelevant for normal bankrolls
 Inflator boss: deadline × 1.25 (applied in startNextCycle, after the chase)
 
@@ -406,29 +406,42 @@ Greed Mode event: max(minBet, GREED_MODE_MIN_BET=25)
 
 // Board growth (BOARD_GROWTH / calcBoardCols) — the second difficulty axis
 cycles 1-5: 5×5 | 6-9: 6×6 | 10+: 7×7      (state.board_cols; board.length === cols²)
+// Attempts per cycle — the third axis (attemptsForCycle): 3, then 2 from
+// LATE_GAME_ATTEMPTS_FROM_CYCLE (10); Short Fuse forces 2 any time
 
 // Base bombs per cycle: exact counts on the 5×5 opening cycles, then a DENSITY
-// curve on the growing board (bigger boards have more interior, so the same
-// density is more deducible — the curve can keep climbing gently)
-cycle 1-5: [3, 3, 4, 5, 6]
-cycle 6+:  round(tiles × min(BOMB_DENSITY_BASE(0.22) + (cycle−6) × 0.02, BOMB_DENSITY_MAX(0.34)))
+// curve on the growing board. Densities sit AT OR BELOW expert minesweeper
+// (~21%) — a human playtest found 11 bombs on a 6×6 (30%) unplayable.
+cycle 1-5: [4, 4, 5, 5, 6]
+cycle 6+:  round(tiles × min(BOMB_DENSITY_BASE(0.16) + (cycle−6) × 0.008, BOMB_DENSITY_MAX(0.22)))
 
 // Dynamic bomb count (from bet) — the bet is a RISK dial, see effectiveBombs()
-bombs = base + floor((bet / wallet) × BOMB_RATIO_SLOPE(6)), capped at base + 5,
-        hard cap floor(tiles × MAX_BOMB_SHARE(0.45))
+bombs = base + floor((bet / wallet) × BOMB_RATIO_SLOPE(6)), capped at base + 4,
+        hard cap floor(tiles × MAX_BOMB_SHARE(0.30))
 +3 extra if Danger Pay event active
 +1 if Loaded Dice relic
 −2 if High Roller relic and bet ≥ 50% of wallet
-−1 Collateral: if deposited ≥ 50% of the deadline (COLLATERAL_DEPOSIT_FRAC)
+−1 Collateral: if deposited ≥ 75% of the deadline (COLLATERAL_DEPOSIT_FRAC)
 
 // Tile cash — SUB-LINEAR in the bet (the old linear 3 + 0.4×bet let a cleared
 // board pay 12–35× the bet and any skilled run compounded without bound)
-baseCash = TILE_CASH_BET_COEF(0.29) × bet ^ TILE_CASH_BET_EXP(0.9)
+baseCash = TILE_CASH_BET_COEF(0.17) × bet ^ TILE_CASH_BET_EXP(0.9) × (25 / tiles)
+   — normalised by board AREA so a full clear pays the same multiple on 7×7 as on 5×5
 cash = baseCash × symbolModifier × multiplier
-   [× 1.4 if Danger Pay]
+   [× 1.4 if Danger Pay]  [× 1.25 if Loaded Dice]
    [× 1.5 for star if Star Shower]
-// The STAKE IS RETURNED on cashout (wallet += bet + winnings); a bust loses it.
-// A well-played board returns ~2–3× the stake.
+// The STAKE IS RETURNED on cashout (wallet += stake × fraction + winnings); a bust
+// loses it. stakeReturnInfo(): fraction = min(1, revealedSafe / ceil(safeTiles ×
+// STAKE_RETURN_CLEAR_FRAC(0.3))) — the full stake needs a real attempt; an early
+// cashout returns it pro rata (this killed the "opening + one proven click, cash
+// out, snowball" line a human playtester found). A full 5×5 clear ≈ 3× the stake.
+
+// Flat cash rewards scale with the bet: flatCashScale(bet) = max(1, bet / MIN_BET_BASE)
+// multiplies Cherry Rush/Star Power rewards, Hot Hands, streak-15 cash, Lucky Tile,
+// Greed Chip and the Bomb Sense flag bonus. Shop CASH prices scale with the
+// deadline: shopPriceScale(deadline) = max(1, deadline / calcDeadline(1)) multiplies
+// consumable prices (getConsumablePrice) and pack prices (getPackPrice). Ticket
+// prices don't scale (tickets are earned at flat rates).
 
 // Symbol modifiers (getSymbolMod — takes full state, not just event/relic flags)
 // 5 symbols only — coin was removed (too many symbols for a 5×5 grid; see
@@ -446,15 +459,16 @@ base weight × 2 if matching event card (cherry_season/banana_bonanza/star_showe
 start = 1.0 (1.3 with Head Start) + (carry_multiplier − 1) + 0.5 if Mult Vial
 carry_multiplier = 1 + (prev mult − 1) × 0.5 with Momentum Core (cashout AND bust), else 1.0
 
-// Multiplier growth per symbol tile (deliberately shallow — value lives in base cash)
-gain = MULT_GAIN_BASE(0.04) + bombs × MULT_GAIN_PER_BOMB(0.005)
+// Multiplier growth per symbol tile (deliberately shallow — value lives in base cash;
+// at 0.04/0.005 a cycle-1 full clear paid 7–9× the stake and the wallet went ×40)
+gain = MULT_GAIN_BASE(0.02) + bombs × MULT_GAIN_PER_BOMB(0.003)
 gain ×= 1.2 if Adrenaline Core relic
-+DEDUCTION_MULT_GAIN (0.05) per PROVEN click (LOGICIAN_MULT_GAIN 0.10 with Logician)
++DEDUCTION_MULT_GAIN (0.03) per PROVEN click (LOGICIAN_MULT_GAIN 0.06 with Logician)
 
 // Streak milestones (streak = consecutive symbol tiles; empties PAUSE it, a GUESS resets it)
-streak 5:  +0.15 mult (or +$8 if Hot Hands relic)
-streak 10: +0.35 mult
-streak 15: +$5 flat
+streak 5:  +0.10 mult (or +$8 × flatCashScale if Hot Hands relic)
+streak 10: +0.20 mult
+streak 15: +$5 × flatCashScale
 
 // Cashout tickets (ALL additive)
 +1 complete attempt (cashout OR bust — awarded on bust directly in handleTileClick)
@@ -497,7 +511,8 @@ Pure functions, no React, shared by the Grid (rendering) and the reducer (taggin
 numberNeighbors(state, i)         // 8-neighbourhood, or diagonals only under Mirror
 displayedNumber(state, board, i)  // number the tile SHOWS, or null: revealed safe tiles only,
                                   // symbol tiles go dark under Blackout, Liar tile is off by one
-rowColTotals(board)               // Ledger relic (rows shown; cols computed, not shown)
+rowColTotals(board)               // Ledger relic (only ledgerRow(state, board) — the last
+                                  // revealed-in row — is shown/used; cols computed, not shown)
 analyzeBoard(state, board)        // { safe, bombs, hasInfo } — constraint propagation to a
                                   // fixpoint over: every shown number, hinted (safe) and
                                   // ⚠/scanner-revealed (bomb) tiles, the 💣 counter as a
@@ -608,12 +623,12 @@ bonus disabled for playtesting) — listed below for reference but not in the sh
 | synergist | Every combo permanently boosts that symbol's payout ×1.25 (stacks) | 16🎫 | legendary |
 | chain_reaction | 2+ combos in one attempt: cashout earns ×1.5 | 14🎫 | rare |
 | specialist | Packs favor your most-boosted symbol instead of avoiding it | 12🎫 | rare |
-| ledger | Row bomb totals shown along the board's right edge (extra constraints for the solver) | 14🎫 | rare |
-| logician | Proven clicks give +0.10 mult instead of +0.05 | 12🎫 | rare |
-| gut_feeling | Once per cycle, a guess that would bust is spared (bomb relocated) | 12🎫 | rare |
+| ledger | The row you LAST revealed in shows its bomb total at the board's right edge (`ledgerRow`, reads `last_reveal_index`) | 14🎫 | rare |
+| logician | Proven clicks give +0.06 mult instead of +0.03 | 12🎫 | rare |
+| gut_feeling | Once per cycle, a guess that would bust ends the attempt as a cashout for HALF the winnings (stake kept) | 16🎫 | legendary |
 | echo | After a bust, the next board starts with 2 empties already revealed | 10🎫 | common |
 | second_sight *(unlock)* | Hinted (known-safe) tiles show their number before being revealed (`displayedNumber`) | 12🎫 | rare |
-| cartographer *(unlock)* | First click opens a full bomb-free 3×3 (`openingTiles(..., full=true)`) | 18🎫 | legendary |
+| cartographer *(unlock)* | Every board starts with 2 empties already revealed (Echo, always on) | 18🎫 | legendary |
 | double_down *(unlock)* | Bets ≥ half the pre-bet wallet pay ×1.3 winnings (handleCashout) | 12🎫 | rare |
 | loaded_dice | +1 bomb every board, every tile pays ×1.25 | 8🎫 | common |
 | vault *(unlock)* | Deposited cash earns half its interest even on a bust | 12🎫 | rare |
@@ -631,8 +646,11 @@ of `meta.unlocks` taken at `createInitialState()`. See "Unlocks & daily run" bel
 `sixth_sense` was retired — numbers on every revealed tile is now the baseline rule
 (it was a 6× run-length multiplier as a single relic). Ledger is deliberately
 rows-only: rows+columns made most boards fully determined in the bot test. Gut Feeling
-ends the attempt as a forced cashout rather than relocating the bomb — a free
-relocation once per cycle let the perfect-deducer bot run 25+ cycles on that relic alone.
+ends the attempt as a forced cashout (half winnings) rather than relocating the bomb — a
+free relocation once per cycle let the perfect-deducer bot run 25+ cycles on that relic
+alone. Ledger shows ONE row (the last revealed-in row): every row at once made low-density
+boards fully determined. Cartographer's original "bomb-free 3×3 opening" made the bot
+immortal in 80% of runs — it's now Echo-always-on.
 
 Max 6 relics active by default (`state.max_relic_slots`, starts at `MAX_ACTIVE_RELICS`)
 — buyable up the Relic Case shop item, see below. Relic reroll costs 2🎫.
@@ -938,9 +956,18 @@ CASHOUT button for a CONTINUE button that dispatches `BUST_FLASH_END`.
   board. The DebugPanel's "Cycle #" setter patches `board_cols` alongside `cycle_number`.
 - **`active_events` is derived.** Never push to it directly outside `selectEventCard` /
   `startNextCycle` (the DebugPanel's MODIFIERS toggles are the one debug-only exception).
-- **Tile cash is sub-linear and the stake comes back.** Anything that reasons about
-  "earnings vs bet" (profitable-clear tickets, bot cashout rules, UI copy) must treat the
-  bet as returned money, not spent money. `total_earned` counts winnings only.
+- **Tile cash is sub-linear, area-normalised, and the stake comes back pro rata.**
+  Anything that reasons about "earnings vs bet" (profitable-clear tickets, bot cashout
+  rules, UI copy) must treat the bet as returned money, not spent money — and must go
+  through `stakeReturnInfo` for how much of it. `total_earned` counts winnings only.
+  Any NEW flat cash reward must multiply by `flatCashScale(bet)` and any new cash-priced
+  shop item by `shopPriceScale(deadline)`, or it becomes irrelevant by cycle 5.
+- **Balance history of the human playtest (2026-09-10)**: "click once or twice and cash
+  out, snowball", "11 bombs on 6×6 is too much", "$22 packs against a $1,000 deadline".
+  Fixes: stake-return threshold, density cut to ≤22%, price/flat-reward scaling, tile
+  cash normalised by board area, multiplier growth halved, 2 attempts from cycle 10,
+  collateral at 75%. Bot targets after it: random ~1–2, noisy deducer 2–3, perfect
+  deducer 5 (min bet) / 4–6 (30% bets), relic builds ~10–15, nobody immortal.
 
 - **`state.player_flags` (Bomb Sense guesses) is a completely separate concept from
   `Tile.state === 'flagged'`** (Bomb Detector consumable's "this hidden tile IS a

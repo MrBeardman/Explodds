@@ -18,18 +18,19 @@ const PARAMS = {
   minBetPerCycle: 2,             // MIN_BET_PER_CYCLE — min bet rises each cycle
   betStep: 5,
   fixedDeadlines: [60, 90, 120, 160, 200],
-  deadlineGrowth: 1.25,          // cycle 6+ multiplier
-  deadlineWalletChase: 0.55,     // DEADLINE_WALLET_CHASE — next deadline ≥ this × wallet
+  deadlineGrowth: 1.3,           // cycle 6+ multiplier
+  deadlineWalletChase: 0.6,      // DEADLINE_WALLET_CHASE — next deadline ≥ this × wallet
   emptyFrac: 0.25,               // share of non-bomb tiles that are empty
-  tileBase: bet => 0.29 * Math.pow(bet, 0.9),          // TILE_CASH_BET_COEF × bet^TILE_CASH_BET_EXP
+  tileBase: bet => 0.17 * Math.pow(bet, 0.9),          // TILE_CASH_BET_COEF × bet^TILE_CASH_BET_EXP (sim plays 25 tiles, so no board-area factor)
   boardCols: c => (c >= 10 ? 7 : c >= 6 ? 6 : 5),    // BOARD_GROWTH — the sim still plays 25 tiles; density is what matters
-  baseBombs: c => (c <= 5 ? [3, 3, 4, 5, 6][c - 1] : Math.round(25 * Math.min(0.22 + (c - 6) * 0.02, 0.34))), // BOMB_DENSITY_* scaled to the sim's 25-tile board
+  baseBombs: c => (c <= 5 ? [4, 4, 5, 5, 6][c - 1] : Math.round(25 * Math.min(0.16 + (c - 6) * 0.008, 0.22))), // BOMB_DENSITY_* scaled to the sim's 25-tile board
   bombRatioSlope: 6,             // BOMB_RATIO_SLOPE — +1 bomb per 1/6 of wallet bet
-  bombRatioCap: 5,               // BOMB_RATIO_CAP
-  multGain: bombs => 0.04 + bombs * 0.005,             // MULT_GAIN_BASE + MULT_GAIN_PER_BOMB × bombs
-  streak5Mult: 0.15, streak10Mult: 0.35, streak15Cash: 5,
+  bombRatioCap: 4,               // BOMB_RATIO_CAP
+  stakeReturnClearFrac: 0.3,     // STAKE_RETURN_CLEAR_FRAC — full stake back only after revealing this share of safe tiles
+  multGain: bombs => 0.02 + bombs * 0.003,             // MULT_GAIN_BASE + MULT_GAIN_PER_BOMB × bombs
+  streak5Mult: 0.10, streak10Mult: 0.20, streak15Cash: 5,
   avgSymbolMod: 1.043,           // weighted mean of symbol modifiers (5 symbols: diamond/cherry/banana/star/bell)
-  baseInterestRate: 0.12,        // BASE_INTEREST_RATE — per cashout, on the deposited pool
+  baseInterestRate: 0.08,        // BASE_INTEREST_RATE — per cashout, on the deposited pool
   inflatorInterestMult: 2,       // INFLATOR_INTEREST_MULT
   stakeReturned: true,           // cashout returns the bet on top of winnings; bust loses it
 };
@@ -111,8 +112,11 @@ function playAttempt(bet, wallet, cycle, rng, { skill, alpha, boss }) {
     const pBomb = (nBomb / hidden) * (1 - skill); // skill = adjacency deduction
     const pSym = nSym / (nSym + nEmpty);
     const expTile = pSym * PARAMS.tileBase(bet) * PARAMS.avgSymbolMod * mult;
-    const atRisk = earnings + (PARAMS.stakeReturned ? bet : 0);
-    if (earnings > 0 && pBomb * atRisk >= alpha * expTile) break;
+    const safeTotal = 25 - bombs;
+    const revealedSafe = safeTotal - (nSym + nEmpty);
+    const stakeFrac = Math.min(1, revealedSafe / Math.ceil(safeTotal * PARAMS.stakeReturnClearFrac));
+    const atRisk = earnings + (PARAMS.stakeReturned ? bet * stakeFrac : 0);
+    if (earnings > 0 && stakeFrac >= 1 && pBomb * atRisk >= alpha * expTile) break;
 
     if (rng() < pBomb) return { earn: 0, busted: true };
     // safe click: symbol or empty proportionally
@@ -147,7 +151,7 @@ function playRunWithDepositPolicy(profile, depositMode, rng, maxCycles = 60) {
     // The house notices: deadline never sits below a share of the wallet
     let deadline = Math.max(calcDeadline(cycle), Math.round((wallet * PARAMS.deadlineWalletChase) / 10) * 10);
     if (boss === 'inflator') deadline = Math.round((deadline * 1.25) / 10) * 10;
-    const attempts = boss === 'short_fuse' ? 2 : 3;
+    const attempts = boss === 'short_fuse' || cycle >= 10 ? 2 : 3; // LATE_GAME_ATTEMPTS_FROM_CYCLE
     const minBet = calcMinBet(cycle);
     const interestRate = PARAMS.baseInterestRate * (boss === 'inflator' ? PARAMS.inflatorInterestMult : 1);
     let deposited = 0;

@@ -16,7 +16,7 @@ import {
   PROFITABLE_EARNINGS_RATIO, TICKETS_FLAWLESS, FLAWLESS_MIN_PROVEN,
   DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, ECHO_REVEALED_EMPTIES, CURFEW_CLICKS,
   MULT_GAIN_BASE, MULT_GAIN_PER_BOMB, STREAK_5_MULT, STREAK_10_MULT, STREAK_15_CASH,
-  MAX_TRAITS, LOCKED_RELIC_IDS,
+  MAX_TRAITS, LOCKED_RELIC_IDS, STAKE_RETURN_CLEAR_FRAC, shopPriceScale, flatCashScale, attemptsForCycle,
 } from './constants';
 import { analyzeBoard, neighbors8, trueNumber, boardCols } from './deduction';
 import type {
@@ -351,12 +351,13 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
   const symbol = tile.symbol!;
   board[tileIndex].state = 'revealed';
 
-  const baseCash = calcTileBaseCash(state.current_bet);
+  const baseCash = calcTileBaseCash(state.current_bet, state.board_cols * state.board_cols);
   const symbolMod = getSymbolMod(symbol, state);
   let cash = baseCash * symbolMod * acc.mult;
   if (state.active_events.includes('danger_pay')) cash *= 1.4;
   if (state.relics.includes('loaded_dice')) cash *= 1.25;
-  const luckyBonus = tile.consumable === 'lucky_tile' ? 5 : 0;
+  const flat = flatCashScale(state.current_bet);
+  const luckyBonus = tile.consumable === 'lucky_tile' ? 5 * flat : 0;
   cash = parseFloat(cash.toFixed(2));
 
   const bananaEarnings = symbol === 'banana' ? [...acc.bananaEarnings, cash] : acc.bananaEarnings;
@@ -370,7 +371,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
   let streakBonus = 0;
 
   if (streak >= 5 && !s5) {
-    if (state.relics.includes('hot_hands')) streakBonus += 8;
+    if (state.relics.includes('hot_hands')) streakBonus += 8 * flat;
     else mult = parseFloat((mult + STREAK_5_MULT).toFixed(3));
     s5 = true;
   }
@@ -379,7 +380,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
     s10 = true;
   }
   if (streak >= 15 && !s15) {
-    streakBonus += STREAK_15_CASH;
+    streakBonus += STREAK_15_CASH * flat;
     s15 = true;
   }
 
@@ -406,7 +407,7 @@ function applySymbolTileReveal(state: GameState, board: Tile[], tileIndex: numbe
   }
 
   return {
-    earnings: acc.earnings + cash + luckyBonus + streakBonus,
+    earnings: parseFloat((acc.earnings + cash + luckyBonus + streakBonus).toFixed(2)),
     mult,
     streak,
     s5, s10, s15,
@@ -431,6 +432,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
 
   const triggered = [...state.combos_triggered];
   const display: ComboDisplay[] = [...state.active_combo_display];
+  const flat = flatCashScale(state.current_bet);
   let comboId = state.combo_id_counter;
   let bellStormStreak: number | null = null;
 
@@ -441,7 +443,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   if (!triggered.includes('cherry_rush')) {
     const cherryIdxs = board.filter(t => t.state === 'revealed' && t.symbol === 'cherry').map(t => t.index);
     if (hasCherryRowCol(cherryIdxs, boardCols(board))) {
-      const reward = state.relics.includes('cherry_picker') ? 20 : 12;
+      const reward = (state.relics.includes('cherry_picker') ? 20 : 12) * flat;
       newEarnings += reward;
       triggered.push('cherry_rush');
       display.push({ text: '🍒 CHERRY RUSH!', amount: `+$${reward}`, color: '#ff6b6b', id: comboId++ });
@@ -467,7 +469,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   if (!triggered.includes('star_power')) {
     const starCount = board.filter(t => t.state === 'revealed' && t.symbol === 'star').length;
     if (starCount >= 3) {
-      const reward = state.relics.includes('star_magnet') ? 28 : 18;
+      const reward = (state.relics.includes('star_magnet') ? 28 : 18) * flat;
       newEarnings += reward;
       triggered.push('star_power');
       display.push({ text: '⭐ STAR POWER!', amount: `+$${reward}`, color: '#ffe66d', id: comboId++ });
@@ -515,7 +517,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
   // mark them given, so the next click doesn't pay them out a second time.
   if (bellStormStreak !== null) {
     if (bellStormStreak >= 5 && !s5) {
-      if (state.relics.includes('hot_hands')) newEarnings += 8;
+      if (state.relics.includes('hot_hands')) newEarnings += 8 * flat;
       else newMult = parseFloat((newMult + STREAK_5_MULT).toFixed(3));
       s5 = true;
     }
@@ -524,7 +526,7 @@ function resolveCombosAndFinalize(state: GameState, board: Tile[], acc: RevealAc
       s10 = true;
     }
     if (bellStormStreak >= 15 && !s15) {
-      newEarnings += STREAK_15_CASH;
+      newEarnings += STREAK_15_CASH * flat;
       s15 = true;
     }
   }
@@ -654,7 +656,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
 
   // ── Proven vs. guess ──────────────────────────────────────────────────────
   let proven = false;
-  let gutUsed = state.gut_feeling_used;
+  const gutUsed = state.gut_feeling_used;
   if (!free) {
     proven = analyzeBoard(state, state.board).safe.has(tileIndex);
     // Gut Feeling relic: once per cycle, a guess that would bust is spared —
@@ -747,6 +749,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
       player_flags: [],
       flag_mode: false,
       deduction_streak: 0,
+      last_reveal_index: -1,
       proven_clicks: 0,
       guess_clicks: 0,
       last_attempt_busted: true,
@@ -811,6 +814,7 @@ export function handleTileClick(state: GameState, tileIndex: number): GameState 
     ...state,
     ...finalized,
     clicks_this_attempt: state.clicks_this_attempt + 1,
+    last_reveal_index: tileIndex,
     deduction_streak: proven ? state.deduction_streak + 1 : (free ? state.deduction_streak : 0),
     proven_clicks: state.proven_clicks + (proven ? 1 : 0),
     guess_clicks: state.guess_clicks + (guess ? 1 : 0),
@@ -878,8 +882,8 @@ export function getSymbolOdds(state: GameState): SymbolOddsRow[] {
     const pct = totalW > 0 ? w / totalW : 0;
     const basePct = baseTotalW > 0 ? s.weight / baseTotalW : 0;
 
-    const payout = calcTileBaseCash(bet) * getSymbolMod(s.id, state) * mult;
-    const basePayout = calcTileBaseCash(bet) * s.modifier * mult;
+    const payout = calcTileBaseCash(bet, state.board_cols * state.board_cols) * getSymbolMod(s.id, state) * mult;
+    const basePayout = calcTileBaseCash(bet, state.board_cols * state.board_cols) * s.modifier * mult;
 
     return {
       id: s.id,
@@ -925,7 +929,7 @@ export function toggleFlag(state: GameState, tileIndex: number): GameState {
 // itself rather than just surviving.
 export function calcFlagBonus(state: GameState): { correct: number; bonus: number } {
   const correct = state.player_flags.filter(i => state.board[i]?.type === 'bomb').length;
-  return { correct, bonus: parseFloat((correct * BOMB_FLAG_BONUS).toFixed(2)) };
+  return { correct, bonus: parseFloat((correct * BOMB_FLAG_BONUS * flatCashScale(state.current_bet)).toFixed(2)) };
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────
@@ -986,6 +990,18 @@ export function handleDeposit(state: GameState, amount: number): GameState {
   return next;
 }
 
+// ─── Stake return ─────────────────────────────────────────────────────────────
+//
+// The stake comes back pro rata to how much of the board's safe tiles you
+// revealed, reaching 100% at STAKE_RETURN_CLEAR_FRAC. Shown live on the CASHOUT
+// button so the trade-off is always visible.
+export function stakeReturnInfo(state: GameState): { fraction: number; revealed: number; required: number } {
+  const safeTotal = state.board.filter(t => t.type !== 'bomb').length;
+  const revealed = state.board.filter(t => t.state === 'revealed' || t.state === 'empty_revealed').length;
+  const required = Math.max(1, Math.ceil(safeTotal * STAKE_RETURN_CLEAR_FRAC));
+  return { fraction: Math.min(1, revealed / required), revealed, required };
+}
+
 // ─── Cashout ──────────────────────────────────────────────────────────────────
 
 export function handleCashout(state: GameState): GameState {
@@ -1012,14 +1028,15 @@ export function handleCashout(state: GameState): GameState {
   }
 
   // Greed Chip relic: +$3 flat
-  if (state.relics.includes('greed_chip')) earnings += 3;
+  if (state.relics.includes('greed_chip')) earnings += 3 * flatCashScale(state.current_bet);
 
   // The stake comes back on every cashout — only a bust loses it. "Round
   // winnings" is the fully-modified total (all cashout modifiers already
   // folded in above) rather than itemizing each one separately.
-  const stake = state.current_bet;
+  const stakeInfo = stakeReturnInfo(state);
+  const stake = parseFloat((state.current_bet * stakeInfo.fraction).toFixed(2));
   const cashLines: ResultLine[] = [
-    { label: 'Stake returned', amount: stake },
+    { label: stakeInfo.fraction >= 1 ? 'Stake returned' : `Stake returned (${Math.round(stakeInfo.fraction * 100)}% — early cashout)`, amount: stake },
     { label: 'Round winnings', amount: parseFloat(earnings.toFixed(2)) },
   ];
 
@@ -1082,6 +1099,7 @@ export function handleCashout(state: GameState): GameState {
     player_flags: [],
     flag_mode: false,
     deduction_streak: 0,
+    last_reveal_index: -1,
     proven_clicks: 0,
     guess_clicks: 0,
     last_attempt_busted: false,
@@ -1185,9 +1203,10 @@ export function effectiveBombs(state: GameState, bet: number, wallet: number): n
   return bombs;
 }
 
-// Haggler relic: consumables cost 30% less
+// Cash prices scale with the deadline (shopPriceScale); Haggler relic: consumables cost 30% less
 export function getConsumablePrice(state: GameState, basePrice: number): number {
-  return state.relics.includes('haggler') ? Math.floor(basePrice * 0.7) : basePrice;
+  const scaled = basePrice * shopPriceScale(state.deadline);
+  return Math.round(state.relics.includes('haggler') ? scaled * 0.7 : scaled);
 }
 
 // Warden boss: bet is locked to 25% of wallet (respecting min bet / bet step)
@@ -1238,6 +1257,7 @@ export function handlePlaceBet(state: GameState): GameState {
     player_flags: [],
     flag_mode: false,
     deduction_streak: 0,
+    last_reveal_index: -1,
     proven_clicks: 0,
     guess_clicks: 0,
     pending_probe: false,
@@ -1345,7 +1365,7 @@ export function startNextCycle(state: GameState): GameState {
     deadline: nextDeadline,
     deposited: 0,
     interest_earned_this_cycle: 0,
-    attempts_remaining: boss === 'short_fuse' ? 2 : 3,
+    attempts_remaining: attemptsForCycle(nextCycle, boss),
     bomb_suit_used: false,
     lucky_board_used: false,
     // Cycle-scoped picks expire; permanent traits carry on
@@ -1374,6 +1394,7 @@ export function startNextCycle(state: GameState): GameState {
     player_flags: [],
     flag_mode: false,
     deduction_streak: 0,
+    last_reveal_index: -1,
     proven_clicks: 0,
     guess_clicks: 0,
     gut_feeling_used: false,
@@ -1449,6 +1470,7 @@ export function createInitialState(opts: { daily?: boolean; seed?: number } = {}
     player_flags: [],
     flag_mode: false,
     deduction_streak: 0,
+    last_reveal_index: -1,
     proven_clicks: 0,
     guess_clicks: 0,
     gut_feeling_used: false,
@@ -1504,7 +1526,7 @@ export function createInitialState(opts: { daily?: boolean; seed?: number } = {}
 // roll a "huge" variant with 5 reveal choices instead of 3.
 
 export function getPackPrice(state: GameState): number {
-  return PACK_BASE_PRICE + state.packs_opened * PACK_PRICE_STEP;
+  return Math.round((PACK_BASE_PRICE + state.packs_opened * PACK_PRICE_STEP) * shopPriceScale(state.deadline));
 }
 
 function weightedPick<T>(rng: () => number, options: { value: T; weight: number }[]): T {

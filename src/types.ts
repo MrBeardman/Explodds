@@ -228,6 +228,7 @@ export interface GameState {
   player_flags: number[];         // Bomb Sense skill: tile indices guessed as bombs this attempt
   flag_mode: boolean;             // toggled via FLAG button — next tile click flags instead of reveals
   deduction_streak: number;       // consecutive PROVEN-safe clicks this attempt (a guess resets it)
+  last_reveal_index: number;      // tile index of the last deliberate reveal this attempt (−1 = none); Ledger relic reads its row
   proven_clicks: number;          // proven-safe clicks this attempt (Flawless ticket bonus)
   guess_clicks: number;           // unproven clicks this attempt
   gut_feeling_used: boolean;      // Gut Feeling relic: first guess each attempt is bomb-proof, once

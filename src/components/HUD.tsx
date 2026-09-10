@@ -1,4 +1,4 @@
-import { BOSS_MAP, EVENT_CARD_MAP, DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN } from '../constants';
+import { BOSS_MAP, EVENT_CARD_MAP, DEDUCTION_MULT_GAIN, LOGICIAN_MULT_GAIN, attemptsForCycle } from '../constants';
 import { isBossCycle } from '../gameLogic';
 import type { GameState } from '../types';
 
@@ -71,7 +71,7 @@ export function HUD({ state }: Props) {
       <div className="stat-card flex items-center justify-between">
         <span className="font-mono text-xs" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>ATTEMPTS</span>
         <div className="flex gap-2 items-center">
-          {Array.from({ length: state.active_boss === 'short_fuse' ? 2 : 3 }).map((_, i) => (
+          {Array.from({ length: attemptsForCycle(state.cycle_number, state.active_boss) }).map((_, i) => (
             <span key={i} className="text-base leading-none" style={{ opacity: i < state.attempts_remaining ? 1 : 0.2 }}>
               💣
             </span>

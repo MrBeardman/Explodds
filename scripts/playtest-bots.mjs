@@ -106,8 +106,12 @@ function chooseClick(state, player, rng, { alpha, skill }) {
     const safeTiles = b.filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted'));
     const symShare = safeTiles.length ? safeTiles.filter(t => t.type === 'symbol').length / safeTiles.length : 0;
     const expTile = symShare * GL.getSymbolOdds(state).reduce((s, r) => s + r.payout * r.pct / 100, 0) * state.multiplier;
-    const atRisk = state.current_bet + state.attempt_earnings;
-    if (bestP * atRisk >= alpha * expTile) return { action: 'cashout' };
+    const info = GL.stakeReturnInfo(state);
+    const stakeBack = state.current_bet * info.fraction;
+    const atRisk = stakeBack + state.attempt_earnings;
+    // Each further safe reveal also unlocks more of the stake until the threshold
+    const stakeGain = info.fraction < 1 ? state.current_bet / info.required : 0;
+    if (bestP * atRisk >= alpha * (expTile + stakeGain)) return { action: 'cashout' };
     if (bestP >= 0.5) return { action: 'cashout' };
   }
   return { action: 'click', idx: best, kind: 'guess', risk: bestP };
@@ -131,7 +135,7 @@ export function playRun({ player = 'solver', seed = 1, cascade = 1, relics = [],
         const minBet = GL.getMinBet(s);
         if (depositEarly) {
           // Collateral play: bank half the deadline up front (−1 bomb + interest), keep the bet
-          const want = Math.max(0, Math.ceil(s.deadline * 0.5) - s.deposited);
+          const want = Math.max(0, Math.ceil(s.deadline * 0.75) - s.deposited);
           const plannedBet = Math.max(minBet, Math.round((s.wallet * betFrac) / 5) * 5);
           const dep = Math.min(want, Math.max(0, s.wallet - plannedBet));
           if (dep > 0) { s = GL.handleDeposit(s, dep); if (s.phase !== 'BET') break; }

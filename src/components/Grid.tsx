@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { SYMBOL_MAP, ALL_CONSUMABLES } from '../constants';
 import { adjacentBombCount } from '../gameLogic';
-import { displayedNumber, rowColTotals, boardCols } from '../deduction';
+import { displayedNumber, rowColTotals, boardCols, ledgerRow } from '../deduction';
 import type { GameState, Tile } from '../types';
 import bombSrc from '../assets/bomb.png';
 
@@ -34,8 +34,9 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
   const playerFlags = state.player_flags;
   const isBustFlash = phase === 'BUST_FLASH';
   const cols = boardCols(board);
-  // Ledger relic: bomb totals per row along the board's right edge
+  // Ledger relic: the last-revealed row's bomb total along the board's right edge
   const ledger = state.relics.includes('ledger') && board.length > 0 ? rowColTotals(board) : null;
+  const ledgerActiveRow = ledgerRow(state, board);
   const bombsHidden = board.filter(t => t.type === 'bomb' && (t.state === 'hidden' || t.state === 'flagged')).length;
   const safeHidden  = board.filter(t => t.type !== 'bomb' && (t.state === 'hidden' || t.state === 'hinted')).length;
   const emptyHidden = board.filter(t => t.type === 'empty' && t.state === 'hidden').length;
@@ -85,7 +86,8 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
             );
             // Ledger: a row total after every 5th tile
             if (ledger && tile.index % cols === cols - 1) {
-              return [cell, <LedgerCell key={`row-${tile.index}`} value={ledger.rows[Math.floor(tile.index / cols)]} title="bombs in this row" />];
+              const r = Math.floor(tile.index / cols);
+              return [cell, <LedgerCell key={`row-${tile.index}`} value={r === ledgerActiveRow ? ledger.rows[r] : null} title={r === ledgerActiveRow ? 'bombs in this row' : 'reveal a tile in this row to read its total'} />];
             }
             return cell;
           })}
@@ -129,14 +131,14 @@ export function Grid({ state, onTileClick, debugReveal = false, revealAll = fals
 
 // ─── Ledger edge cell ─────────────────────────────────────────────────────────
 
-function LedgerCell({ value, title }: { value: number; title: string }) {
+function LedgerCell({ value, title }: { value: number | null; title: string }) {
   return (
     <div
       className="flex items-center justify-center font-mono text-xs leading-none min-h-5"
-      style={{ color: value > 0 ? 'var(--red)' : 'var(--text-dim)' }}
+      style={{ color: value === null ? 'var(--text-dim)' : value > 0 ? 'var(--red)' : 'var(--green-bright)' }}
       title={title}
     >
-      {value}
+      {value === null ? '·' : value}
     </div>
   );
 }

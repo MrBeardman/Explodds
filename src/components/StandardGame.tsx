@@ -5,7 +5,7 @@ import {
   handleBustFlashEnd, getMinBet, getLockedBet, getConsumablePrice,
   effectiveBombs, toBetPhase, handleDeposit, buyPack, pickPackBoost, skipPackBoost, rerollPacks,
   maxPlayerFlags,
-  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate,
+  rerollConsumables, rerollRelics, startNextCycle, drawEventCards, selectEventCard, interestRate, stakeReturnInfo,
   resolveCycleFailure,
   buyRelicCase, dismissResults,
 } from '../gameLogic';
@@ -565,11 +565,14 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
   const displayBet = lockedBet ?? state.current_bet;
   const maxBet = Math.max(minBet, Math.floor(state.wallet / BET_STEP) * BET_STEP);
   const previewBombs = state.debug_bomb_override ?? effectiveBombs(state, displayBet, state.wallet);
-  const previewTileCash = calcTileBaseCash(displayBet)
+  const previewTileCash = calcTileBaseCash(displayBet, state.board_cols * state.board_cols)
     * (state.active_events.includes('danger_pay') ? 1.4 : 1);
 
-  // Cashout returns the stake plus winnings; it opens up after the free opening click
+  // Cashout returns the stake plus winnings; it opens up after the free opening click.
+  // The stake comes back pro rata until enough of the board is revealed.
   const canCashout = isClearing && state.clicks_this_attempt >= 2;
+  const stakeInfo = isClearing ? stakeReturnInfo(state) : { fraction: 1, revealed: 0, required: 0 };
+  const stakeBack = Math.round(state.current_bet * stakeInfo.fraction);
   // Cashing out now would let a deposit of everything clear the deadline
   const cashoutCoversDebt = state.deposited + state.wallet + state.attempt_earnings >= state.deadline;
 
@@ -776,9 +779,15 @@ function LeftPanel({ state, dispatch, isBetting, isClearing, bustRevealReady }: 
           }}
         >
           {canCashout
-            ? (<>CASHOUT<br /><span className="text-sm">+${state.attempt_earnings.toFixed(2)} · stake back</span></>)
+            ? (<>CASHOUT<br /><span className="text-sm">+${state.attempt_earnings.toFixed(2)} · stake ${stakeBack}{stakeInfo.fraction < 1 ? ` (${Math.round(stakeInfo.fraction * 100)}%)` : ''}</span></>)
             : (<>CASHOUT<br /><span className="text-xs font-mono" style={{ letterSpacing: 0 }}>reveal one more tile</span></>)}
         </button>
+      )}
+
+      {isClearing && stakeInfo.fraction < 1 && (
+        <div className="font-mono text-xs text-center" style={{ color: 'var(--gold)' }} title="The full stake only comes back once enough of the board is revealed — cashing out earlier returns it pro rata">
+          reveal {stakeInfo.required - stakeInfo.revealed} more safe tile{stakeInfo.required - stakeInfo.revealed === 1 ? '' : 's'} for the full stake
+        </div>
       )}
 
       {/* Bomb Sense: flag suspected bombs, cashed in for a bonus when the attempt ends */}

@@ -13,12 +13,12 @@ export const GRID_SIZE = GRID_COLS * GRID_COLS;
 // Tuned with `npm run bots` (scripts/playtest-bots.mjs) against the stake-back,
 // sub-linear economy below — see docs/plans/standard-loop-review.md.
 const FIXED_DEADLINES = [60, 90, 120, 160, 200];
-export const DEADLINE_GROWTH = 1.25;
+export const DEADLINE_GROWTH = 1.3;
 
 // The house notices: next cycle's deadline is never below this fraction of the
 // wallet you walk out of the shop with. Backstop against runaway compounding —
 // the fixed curve above still sets the floor for normal bankrolls.
-export const DEADLINE_WALLET_CHASE = 0.55;
+export const DEADLINE_WALLET_CHASE = 0.6;
 
 export function calcDeadline(cycle: number): number {
   if (cycle <= 5) return FIXED_DEADLINES[cycle - 1];
@@ -47,17 +47,29 @@ export const BOARD_GROWTH: Array<{ fromCycle: number; cols: number }> = [
   { fromCycle: 6, cols: 6 },
   { fromCycle: 10, cols: 7 },
 ];
+// Late cycles deal fewer attempts — the third difficulty axis, taken instead of
+// piling on bombs: from this cycle on there are 2 attempts per cycle (Short Fuse
+// still forces 2 earlier). A perfect deducer otherwise coasts once density caps.
+export const LATE_GAME_ATTEMPTS_FROM_CYCLE = 10;
+export function attemptsForCycle(cycle: number, boss: BossId | null): number {
+  if (boss === 'short_fuse') return 2;
+  return cycle >= LATE_GAME_ATTEMPTS_FROM_CYCLE ? 2 : 3;
+}
+
 export function calcBoardCols(cycle: number): number {
   let cols = GRID_COLS;
   for (const step of BOARD_GROWTH) if (cycle >= step.fromCycle) cols = step.cols;
   return cols;
 }
 
-const EARLY_BOMBS = [3, 3, 4, 5, 6];              // exact counts on the 5×5 opening cycles
-export const BOMB_DENSITY_BASE = 0.22;            // cycle 6 density (≈ 6/25 at the end of the 5×5 era)
-export const BOMB_DENSITY_PER_CYCLE = 0.02;
-export const BOMB_DENSITY_MAX = 0.34;
-export const MAX_BOMB_SHARE = 0.45;               // hard cap on bombs / tiles for any board
+// Densities sit at or below expert minesweeper (~21%): a human playtest found
+// 11 bombs on a 6×6 (30%) unplayable, and the bot sweep agrees that deduction
+// collapses past ~25% even with perfect information.
+const EARLY_BOMBS = [4, 4, 5, 5, 6];              // exact counts on the 5×5 opening cycles (3 bombs made cycle 1 a free full clear)
+export const BOMB_DENSITY_BASE = 0.16;            // cycle 6 density
+export const BOMB_DENSITY_PER_CYCLE = 0.008;
+export const BOMB_DENSITY_MAX = 0.22;
+export const MAX_BOMB_SHARE = 0.30;               // hard cap on bombs / tiles for any board (incl. bet-ratio bombs)
 export function getBaseBombs(cycle: number): number {
   if (cycle <= EARLY_BOMBS.length) return EARLY_BOMBS[cycle - 1];
   const tiles = calcBoardCols(cycle) ** 2;
@@ -68,11 +80,11 @@ export function getBaseBombs(cycle: number): number {
 // ─── Dynamic bomb count ───────────────────────────────────────────────────────
 
 // The bet is a RISK dial: a bigger share of the wallet means a noticeably more
-// dangerous board (+1 bomb per ~17% of wallet, up to +5). Combined with the
+// dangerous board (+1 bomb per ~17% of wallet, up to +4). Combined with the
 // sub-linear payout below, betting big is a real decision instead of a
 // compounding lever.
 export const BOMB_RATIO_SLOPE = 6;
-export const BOMB_RATIO_CAP = 5;
+export const BOMB_RATIO_CAP = 4;
 export function calcBombs(bet: number, wallet: number, cycle: number): number {
   const base = getBaseBombs(cycle);
   const ratio = bet / Math.max(wallet, 1);
@@ -89,22 +101,47 @@ export function calcBombs(bet: number, wallet: number, cycle: number): number {
 // bets and less at very large ones, so betting big scales your absolute
 // earnings (to chase a deadline) but never your growth RATE. The stake itself
 // is returned on cashout (see handleCashout) — these numbers are pure winnings.
-export const TILE_CASH_BET_COEF = 0.29;
+export const TILE_CASH_BET_COEF = 0.17;
+
+// ─── Stake return needs a real attempt ────────────────────────────────────────
+//
+// The full stake only comes back once this share of the board's SAFE tiles has
+// been revealed; an earlier cashout returns it pro rata. Without this, a big bet
+// plus the free opening and one provable click was a risk-free ~30% wallet gain
+// per attempt (human playtest: "click once or twice, cash out, snowball").
+export const STAKE_RETURN_CLEAR_FRAC = 0.3;
+
+// ─── Cash prices and flat cash rewards scale with the run ──────────────────────
+//
+// Consumable/pack prices multiply by (deadline / cycle-1 deadline) so a $22 pack
+// isn't pocket change against a $1,000 deadline; flat cash rewards (combo
+// bonuses, streak cash, flag bonus, Greed Chip) multiply by (bet / min bet) for
+// the same reason.
+export function shopPriceScale(deadline: number): number {
+  return Math.max(1, deadline / calcDeadline(1));
+}
+export function flatCashScale(bet: number): number {
+  return Math.max(1, bet / MIN_BET_BASE);
+}
 export const TILE_CASH_BET_EXP = 0.9;
-export function calcTileBaseCash(bet: number): number {
-  return TILE_CASH_BET_COEF * Math.pow(Math.max(0, bet), TILE_CASH_BET_EXP);
+// Normalised by board area: a full clear pays the same multiple of the stake on
+// a 7×7 as on a 5×5, so a bigger board means more clicks (and more risk) for the
+// same money — the growth axis stays a difficulty axis instead of a payday.
+export function calcTileBaseCash(bet: number, tiles: number = GRID_SIZE): number {
+  return TILE_CASH_BET_COEF * Math.pow(Math.max(0, bet), TILE_CASH_BET_EXP) * (GRID_SIZE / Math.max(GRID_SIZE, tiles));
 }
 
 // ─── Deposit / interest / min-bet scaling ─────────────────────────────────────
 
-export const BASE_INTEREST_RATE = 0.12;       // per successful cashout, on the deposited pool
+export const BASE_INTEREST_RATE = 0.08;       // per successful cashout, on the deposited pool
 export const COMPOUND_CHIP_BONUS_RATE = 0.05; // Compound Chip relic adds this
 export const INFLATOR_INTEREST_MULT = 2;      // Inflator boss doubles the rate
 
 // Collateral: once at least this share of the deadline is deposited, the house
-// relaxes — every attempt that cycle deals one fewer bomb. Gives depositing
+// relaxes — every attempt that cycle deals one fewer bomb. (Was 50%: banking
+// half up front let a perfect deducer coast indefinitely in the bot test.) Gives depositing
 // early something betting can't buy (interest alone never beat positive-EV play).
-export const COLLATERAL_DEPOSIT_FRAC = 0.5;
+export const COLLATERAL_DEPOSIT_FRAC = 0.75;
 export const COLLATERAL_BOMB_RELIEF = 1;
 
 // ─── Event cards: cycle-scoped picks + a few permanent traits ─────────────────
@@ -131,18 +168,20 @@ export const FLAWLESS_MIN_PROVEN = 4;         // …and at least this many prove
 // ─── Multiplier growth ─────────────────────────────────────────────────────────
 //
 // Kept deliberately shallow: most of a tile's value is in the base cash so an
-// early click is worth its risk, and a cleared board lands around 2–3× the
-// stake instead of 5×+ (which compounded into immortal runs).
-export const MULT_GAIN_BASE = 0.04;           // per symbol tile
-export const MULT_GAIN_PER_BOMB = 0.005;      // + this × bombs on the board
-export const STREAK_5_MULT = 0.15;
-export const STREAK_10_MULT = 0.35;
+// early click is worth its risk, and a cleared 5×5 lands around 3× the stake
+// (the 40% stake-return threshold is roughly break-even). At 0.04/0.005 with a
+// 0.29 coefficient a cycle-1 full clear paid 7–9× and the wallet went ×40 in
+// one cycle (human playtest: "snowball").
+export const MULT_GAIN_BASE = 0.02;           // per symbol tile
+export const MULT_GAIN_PER_BOMB = 0.003;      // + this × bombs on the board
+export const STREAK_5_MULT = 0.10;
+export const STREAK_10_MULT = 0.20;
 export const STREAK_15_CASH = 5;
 
 // ─── Deduction layer ───────────────────────────────────────────────────────────
 
-export const DEDUCTION_MULT_GAIN = 0.05;      // mult per PROVEN-safe click (on top of the symbol gain)
-export const LOGICIAN_MULT_GAIN = 0.10;       // Logician relic replaces the gain above
+export const DEDUCTION_MULT_GAIN = 0.03;      // mult per PROVEN-safe click (on top of the symbol gain)
+export const LOGICIAN_MULT_GAIN = 0.06;       // Logician relic replaces the gain above
 export const ECHO_REVEALED_EMPTIES = 2;       // Echo relic: numbers pre-revealed on the board after a bust
 export const CURFEW_CLICKS = 10;              // Curfew boss: attempt auto-cashes out after this many reveals
 
@@ -323,7 +362,7 @@ export const ALL_RELICS: ShopRelicItem[] = [
   // Combo-crafting expansion
   { id: 'synergist',       name: 'Synergist',        cost: 16, emoji: '🔁', rarity: 'legendary', description: 'Every combo permanently boosts that symbol\'s payout ×1.25 (stacks)', sold: false, owned: false },
   // Deduction expansion — information relics change the SHAPE of what you can prove
-  { id: 'ledger',          name: 'Ledger',           cost: 14, emoji: '📒', rarity: 'rare',      description: 'The bomb total of every row is shown along the board edge', sold: false, owned: false },
+  { id: 'ledger',          name: 'Ledger',           cost: 14, emoji: '📒', rarity: 'rare',      description: 'The row you last revealed in shows its bomb total at the board edge', sold: false, owned: false },
   { id: 'logician',        name: 'Logician',         cost: 12, emoji: '🧠', rarity: 'rare',      description: `Proven-safe clicks give +${LOGICIAN_MULT_GAIN.toFixed(2)} mult instead of +${DEDUCTION_MULT_GAIN.toFixed(2)}`, sold: false, owned: false },
   { id: 'gut_feeling',     name: 'Gut Feeling',      cost: 16, emoji: '🫀', rarity: 'legendary', description: 'Once per cycle, a guess that would hit a bomb cashes you out instead — for half the winnings', sold: false, owned: false },
   { id: 'echo',            name: 'Echo',             cost: 10, emoji: '📣', rarity: 'common',    description: `After a bust, the next board starts with ${ECHO_REVEALED_EMPTIES} numbers already revealed`, sold: false, owned: false },
